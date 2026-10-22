@@ -79,3 +79,11 @@ backend\.venv\Scripts\pytest -v backend/tests
 | `fake_mp3_128.flac` | Transcoded from 128k MP3 | Brickwall $f_c \approx 16\text{–}17\text{ kHz}$, score $< 40$, status `FAKE` | ✅ PASSED |
 | `spoofed_noise.flac` | 128k MP3 + noise floor | Brickwall/holes detected, score $< 55$ | ✅ PASSED |
 | REST API Endpoints | `/api/health`, `/api/analyze`, static mount | HTTP 200, schema validated | ✅ PASSED |
+
+---
+
+## 💖 Donate / Ủng Hộ
+
+Nếu Truefu Hires hữu ích với bạn, bạn có thể ủng hộ tác giả phát triển dự án tại:
+👉 [https://tsufu.gitbook.io/donate](https://tsufu.gitbook.io/donate)
+

@@ -10,6 +10,7 @@ import {
   Zap,
   Play,
   HelpCircle,
+  Heart,
 } from 'lucide-react';
 import {
   analyzeFile,
@@ -221,6 +222,37 @@ export default function App() {
             />
             <span>{t.header.engineReady}</span>
           </div>
+
+          {/* Donate Button */}
+          <a
+            id="donate-btn"
+            href="https://tsufu.gitbook.io/donate"
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t.header.donateTooltip}
+            className="flex items-center gap-1.5 text-xs sm:text-sm px-3 py-1.5 rounded-xl transition-all font-semibold group cursor-pointer"
+            style={{
+              background: 'linear-gradient(135deg, rgba(244, 63, 94, 0.12), rgba(236, 72, 153, 0.08))',
+              border: '1px solid rgba(244, 63, 94, 0.35)',
+              color: '#fda4af',
+              boxShadow: '0 0 14px rgba(244, 63, 94, 0.12)',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = 'linear-gradient(135deg, rgba(244, 63, 94, 0.25), rgba(236, 72, 153, 0.18))';
+              e.currentTarget.style.borderColor = 'rgba(244, 63, 94, 0.6)';
+              e.currentTarget.style.boxShadow = '0 0 20px rgba(244, 63, 94, 0.3)';
+              e.currentTarget.style.transform = 'translateY(-1px)';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = 'linear-gradient(135deg, rgba(244, 63, 94, 0.12), rgba(236, 72, 153, 0.08))';
+              e.currentTarget.style.borderColor = 'rgba(244, 63, 94, 0.35)';
+              e.currentTarget.style.boxShadow = '0 0 14px rgba(244, 63, 94, 0.12)';
+              e.currentTarget.style.transform = 'translateY(0)';
+            }}
+          >
+            <Heart size={14} className="text-rose-400 fill-rose-400/40 group-hover:scale-110 group-hover:fill-rose-400 transition-all duration-200" />
+            <span>{t.header.donate}</span>
+          </a>
 
           {/* Language Switcher in top right corner */}
           <LanguageSwitch currentLang={lang} onLanguageChange={handleLanguageChange} />
@@ -502,9 +534,22 @@ export default function App() {
               <strong className="text-slate-400">{t.footer.brand}</strong> · {t.footer.tech}
             </span>
           </div>
-          <span className="text-slate-600">
-            {t.footer.sub}
-          </span>
+          <div className="flex items-center gap-4">
+            <a
+              id="footer-donate-link"
+              href="https://tsufu.gitbook.io/donate"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-rose-400 hover:text-rose-300 font-medium transition-colors"
+            >
+              <Heart size={12} className="text-rose-400 fill-rose-400/30" />
+              <span>{t.footer.donate}</span>
+            </a>
+            <span className="text-slate-600 hidden sm:inline">·</span>
+            <span className="text-slate-600">
+              {t.footer.sub}
+            </span>
+          </div>
         </div>
       </footer>
 

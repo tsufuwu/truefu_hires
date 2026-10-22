@@ -361,21 +361,25 @@ async def analyze_audio(file: UploadFile = File(...)):
             detail=f"Unsupported file type '{suffix}'. Supported: {sorted(SUPPORTED_EXTENSIONS)}",
         )
 
-    # ── Save upload to temp file ─────────────────────────────────────────────
+    # ── Stream upload directly to disk in 1MB chunks (memory-safe for 512MB RAM) ──
     tmp_path = Path(UPLOAD_DIR) / f"{uuid.uuid4().hex}{suffix}"
+    total_bytes = 0
+    max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+    CHUNK_SIZE = 1024 * 1024  # 1MB
     try:
-        content = await file.read()
+        with open(tmp_path, "wb") as f_out:
+            while chunk := await file.read(CHUNK_SIZE):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds {MAX_UPLOAD_MB} MB limit.",
+                    )
+                f_out.write(chunk)
 
-        if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File exceeds {MAX_UPLOAD_MB} MB limit.",
-            )
-
-        tmp_path.write_bytes(content)
-        logger.info("Saved upload: %s (%d bytes)", tmp_path, len(content))
-
-        return _process_audio_file(tmp_path, original_name)
+        logger.info("Saved upload via streaming: %s (%d bytes)", tmp_path, total_bytes)
+        result = _process_audio_file(tmp_path, original_name)
+        return result
 
     except HTTPException:
         raise
@@ -383,12 +387,14 @@ async def analyze_audio(file: UploadFile = File(...)):
         logger.exception("Analysis failed for %s: %s", original_name, exc)
         raise HTTPException(status_code=500, detail=f"Analysis error: {exc}")
     finally:
-        # Always clean up uploaded file
+        # Always clean up uploaded file & run garbage collection
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
         except OSError:
             pass
+        import gc
+        gc.collect()
 
 
 # Mount static frontend if built (dist directory exists)

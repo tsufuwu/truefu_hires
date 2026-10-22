@@ -10,6 +10,8 @@ export const translations = {
       dspVersion: 'DSP v1.0',
       engineReady: 'Sẵn sàng',
       inspectAnother: 'Kiểm tra file khác',
+      donate: 'Ủng hộ',
+      donateTooltip: 'Ủng hộ tác giả & dự án Truefu Hires',
     },
     hero: {
       badge: 'Hệ Thống Phân Tích Tín Hiệu Số',
@@ -216,6 +218,7 @@ export const translations = {
       brand: 'Truefu Hires',
       tech: 'Hệ thống giám định chất lượng âm thanh 4 trụ cột DSP',
       sub: 'Phân tích an toàn bộ nhớ theo khung sóng · Render biểu đồ STFT & phổ tần trực quan',
+      donate: 'Ủng hộ dự án',
     },
     bottomUpload: 'Muốn kiểm tra thêm bản nhạc khác?',
     explanationsBtn: 'Đây là gì?',
@@ -302,6 +305,8 @@ export const translations = {
       dspVersion: 'DSP v1.0',
       engineReady: 'Engine Ready',
       inspectAnother: 'Inspect Another',
+      donate: 'Donate',
+      donateTooltip: 'Support Truefu Hires development',
     },
     hero: {
       badge: 'Digital Signal Processing Engine',
@@ -508,6 +513,7 @@ export const translations = {
       brand: 'Truefu Hires',
       tech: '4-Pillar DSP Authenticity Engine',
       sub: 'Memory-safe frame analysis · Headless STFT spectrogram',
+      donate: 'Support & Donate',
     },
     bottomUpload: 'Want to inspect another track?',
     explanationsBtn: 'What is this?',

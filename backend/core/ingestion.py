@@ -162,16 +162,18 @@ def load_pcm_segments(
 
     with sf.SoundFile(filepath) as f:
         total_frames = len(f)
+        # Always use frame count to compute reliable duration
+        calc_duration = total_frames / sample_rate if sample_rate > 0 else duration
 
-        if duration <= MAX_ANALYSIS_SECONDS:
-            # Short file: load everything
+        if 0 < calc_duration <= CHUNK_DURATION_SEC * 3:
+            # Short file (under 30s): load cleanly
             f.seek(0)
             data = f.read(dtype="int32", always_2d=True)
             raw_chunks.append(data)
         else:
+            # Files over 30s: sample 3 representative 10-s segments (20%, 50%, 80%)
             for pos in SAMPLE_POSITIONS:
                 start_frame = int(pos * total_frames)
-                # clamp to valid range
                 start_frame = max(0, min(start_frame, total_frames - chunk_frames))
                 f.seek(start_frame)
                 data = f.read(frames=chunk_frames, dtype="int32", always_2d=True)
@@ -182,8 +184,11 @@ def load_pcm_segments(
         return np.array([], dtype=np.int32), np.array([], dtype=np.float32)
 
     raw_int32 = np.concatenate(raw_chunks, axis=0)          # (N, C) int32
-    float32   = raw_int32.astype(np.float32) / (2**31)      # normalise
-    mono      = float32.mean(axis=1) if float32.ndim > 1 else float32
+    # Memory-safe mono conversion: avoids duplicating massive (N, C) float32 array
+    if raw_int32.ndim > 1 and raw_int32.shape[1] > 1:
+        mono = raw_int32.mean(axis=1).astype(np.float32) / (2**31)
+    else:
+        mono = raw_int32.flatten().astype(np.float32) / (2**31)
     return raw_int32, mono
 
 
