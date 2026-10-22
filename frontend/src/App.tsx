@@ -551,6 +551,11 @@ export default function App() {
             </span>
           </div>
         </div>
+
+        {/* Small Author Credit Line */}
+        <div className="mt-3 pt-3 border-t border-slate-800/40 text-[11px] text-slate-500 font-normal">
+          <span>{t.footer.credit}</span>
+        </div>
       </footer>
 
       {/* ── Educational Explanations Modal ──────────────────────────── */}
