@@ -76,7 +76,7 @@ export const translations = {
         SUSPICIOUS_TRANSCODE: 'Nghi Vấn Nén Lossy (MP3 320k / Opus)',
         FAKE_UPSCALED: 'Lossless Giả (Transcoded từ Lossy)',
         FAKE_SPOOFED: 'Lossless Giả Mạo (Bơm Nhiễu Trắng Siêu Cao)',
-        FAKE_BIT_DEPTH: 'Độ Sâu Bit Giả (Chèn 8 Bit Không)',
+        FAKE_BIT_DEPTH: 'Độ Sâu Bit Bị Độn (Chèn Bit Không)',
         FAKE_AI_UPSCALED: 'Lossless Giả (Bù Dải Tần AI / Neural Vocoder)',
         UPSAMPLED_HIRES: 'Hi-Res Giả (Nâng Tần Từ CD 44.1 kHz)',
       },

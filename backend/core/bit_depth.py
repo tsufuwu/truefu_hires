@@ -101,10 +101,15 @@ def analyze_bit_depth(
             )
 
     # ── Detail string ────────────────────────────────────────────────────────
+    # IMPORTANT: The bit-depth module ONLY concludes based on actual LSB bit-histogram
+    # data. Cross-module suspicion (e.g. lossy cutoff found by Pillar 2) must NOT
+    # override the wasted_bits count or change "is_padded" — those flags belong to
+    # Pillar 2's scoring logic. This module only reports what bits are physically present.
     if is_padded:
+        # wasted_bits >= 8: the declared lower byte of samples is truly all-zero
         detail = (
-            f"Bottom {32 - effective_bd} LSBs are permanently zero. "
-            f"File is {effective_bd}-bit audio padded to {declared_bits}-bit container."
+            f"Bottom {32 - effective_bd} LSBs are permanently zero — "
+            f"recorded as {effective_bd}-bit and zero-padded into a {declared_bits}-bit container."
         )
     elif suspicious_scaling:
         detail = (
@@ -112,7 +117,14 @@ def analyze_bit_depth(
             "Bottom LSBs show fewer than 16 distinct values — possible gain-scaled 16-bit source."
         )
     elif effective_bd >= declared_bits - 1:
-        detail = f"Full {declared_bits}-bit depth confirmed ({effective_bd} effective bits)."
+        # Full bit-depth confirmed — if another pillar suspects lossy, add an informational note
+        # but do NOT call this "padded" or imply wasted bits (wasted_bits == 0 here).
+        detail = (
+            f"Full {declared_bits}-bit depth confirmed ({effective_bd} active bit-planes, "
+            f"wasted bits = {wasted_bits}). "
+            "Lưu ý: Nếu nguồn gốc là lossy, các bit thấp có thể do quá trình giải mã tạo ra — "
+            "xem kết quả Phân Tích Phổ Tần để xác nhận."
+        )
     else:
         detail = f"Declared {declared_bits}-bit, effective {effective_bd}-bit ({wasted_bits} wasted bit-planes)."
 

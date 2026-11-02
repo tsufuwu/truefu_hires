@@ -12,11 +12,11 @@ SUPPORTED_EXTENSIONS = {".flac", ".wav", ".alac", ".ape", ".wv", ".dsf", ".dff"}
 DSD_EXTENSIONS = {".dsf", ".dff"}
 
 # Maximum seconds of audio to analyse per pillar
-MAX_ANALYSIS_SECONDS = 30
+MAX_ANALYSIS_SECONDS = 60
 
 # Number of 10-s chunks to sample from long tracks (at 20 %, 50 %, 80 % positions)
 SAMPLE_POSITIONS = [0.20, 0.50, 0.80]
-CHUNK_DURATION_SEC = 8
+CHUNK_DURATION_SEC = 10
 
 # DSD-to-PCM conversion: target 24-bit / 88.2 kHz
 DSD_PCM_SAMPLE_RATE = 88200
@@ -29,9 +29,9 @@ LSB_ENTROPY_SAMPLE_LIMIT = 1_000_000
 MIN_DISTINCT_BOTTOM_BYTE_VALUES = 16
 
 # ── STFT parameters ─────────────────────────────────────────────────────────
-STFT_NPERSEG_LOW  = 2048    # for sample_rate ≤ 48 000 Hz
+STFT_NPERSEG_LOW  = 4096    # for sample_rate ≤ 48 000 Hz
 STFT_NPERSEG_HIGH = 8192    # for sample_rate > 48 000 Hz
-STFT_NOVERLAP_LOW  = 1024
+STFT_NOVERLAP_LOW  = 2048
 STFT_NOVERLAP_HIGH = 4096
 
 # Percentile used for spectral profile:
@@ -102,8 +102,8 @@ DSD_ULTRA_CORR_THRESH = 0.08
 BASE_SCORE = 100
 
 SCORE_DEDUCTIONS = {
-    "brickwall_low":    60,   # fc ≤ 16 800 Hz (Severe lossy MP3 128k / YouTube)
-    "brickwall_mid":    45,   # 16 800 < fc ≤ 19 500 Hz (MP3 192–256k / AAC)
+    "brickwall_low":    75,   # fc ≤ 16 800 Hz (Severe lossy MP3 128k / YouTube)
+    "brickwall_mid":    65,   # 16 800 < fc ≤ 19 500 Hz (MP3 192–256k / AAC)
     "brickwall_high":   25,   # 19 500 < fc ≤ 20 700 Hz (MP3 320k / Opus)
     "fake_noise":       65,   # Stationary synthetic HF noise injected
     "spectral_holes":   25,   # MDCT spectral holes

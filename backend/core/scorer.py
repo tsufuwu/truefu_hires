@@ -60,17 +60,33 @@ def score_and_verdict(
     deductions: list[str] = []
 
     fc = spectral.detected_cutoff_hz
-    # Cross-validation guard: Cutoff at >= 20.0 kHz with clean MDCT (< 4% holes)
-    # is an authentic Studio Digital Master Filter (e.g. Mora/Apple Music/J-Rock mastering)
+    # Cross-validation guard: Cutoff at >= 20.5 kHz with clean MDCT (holes_detected is False and ratio < 0.15)
+    # Phân loại là "Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter)", không trừ điểm.
+    is_studio_master = (
+        fc is not None
+        and fc >= 20_500.0
+        and not anti_spoof.holes_detected
+        and anti_spoof.spectral_holes_ratio < 0.15
+    )
     is_digital_master = (
         fc is not None
         and fc >= 20_000.0
         and anti_spoof.spectral_holes_ratio < 0.04
         and not anti_spoof.holes_detected
     )
-    if is_digital_master:
+    if is_studio_master or is_digital_master:
         spectral.is_studio_filter = True
         spectral.is_brickwall = False
+        if fc and fc >= 21_000.0:
+            spectral.suspected_source_encoder = "Studio Anti-Aliasing Filter (Redbook CD)"
+        elif not getattr(spectral, "suspected_source_encoder", None) or "MP3" in (spectral.suspected_source_encoder or ""):
+            spectral.suspected_source_encoder = "Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter)"
+        if is_studio_master and not is_digital_master:
+            spectral.detail = (
+                f"Tần số cắt {fc/1000:.2f} kHz nằm ở dải cao (>=20.5 kHz) và tỷ lệ lỗ nén MDCT đạt chuẩn ({anti_spoof.spectral_holes_ratio:.1%}). "
+                f"Phân loại là Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter). "
+                "Không phải dấu hiệu nén lossy."
+            )
 
     is_lossy_brickwall = spectral.is_brickwall and not getattr(spectral, "is_studio_filter", False)
 
@@ -116,21 +132,15 @@ def score_and_verdict(
             f"Stealth flat noise layer / missing HF transient coherence (sigma={advanced.phase_coherence.hf_time_variance_db:.1f} dB) (-{SCORE_DEDUCTIONS['fake_noise']})"
         )
 
-    # C. Bit padding & Fake bit-depth in lossy containers
+    # C. Bit padding & Fake bit-depth
+    # Tách biệt rạch ròi: Module Độ Sâu Bit chỉ được phép kết luận dựa trên dữ liệu bit thực tế (LSB bit-histograms)
+    # Tuyệt đối không gắn nhãn FAKE_BIT_DEPTH khi số bit bị chèn bằng 0.
     if bit_depth.is_padded:
         score -= SCORE_DEDUCTIONS["bit_padded"]
         flags.append("FAKE_BIT_DEPTH")
         hard_evidences.append("bit_padded")
         deductions.append(
             f"16-bit audio padded to {bit_depth.declared}-bit container (-{SCORE_DEDUCTIONS['bit_padded']})"
-        )
-    elif is_lossy_brickwall and bit_depth.declared >= 24:
-        score -= SCORE_DEDUCTIONS["bit_padded"]
-        flags.append("FAKE_BIT_DEPTH")
-        hard_evidences.append("lossy_in_24bit")
-        fc_str = f" at {fc/1000:.1f} kHz" if fc else ""
-        deductions.append(
-            f"Declared {bit_depth.declared}-bit container contains lossy audio with cutoff{fc_str} (-{SCORE_DEDUCTIONS['bit_padded']})"
         )
     elif bit_depth.suspicious_scaling:
         score -= SCORE_DEDUCTIONS["bit_padded"]

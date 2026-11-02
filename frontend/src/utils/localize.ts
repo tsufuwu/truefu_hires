@@ -43,12 +43,8 @@ export function localizeBitDepthDetail(
   }
 
   // Vietnamese localization:
-  if (data.suspicious_scaling && spectral.is_brickwall && !spectral.is_studio_filter) {
-    const fc = spectral.detected_cutoff_hz ? (spectral.detected_cutoff_hz / 1000).toFixed(1) : '16';
-    return `Tệp khai báo container ${data.declared}-bit, nhưng phổ tần bị cắt cụt brickwall tại ${fc} kHz đặc trưng của nguồn nén lossy (MP3/AAC). Các bit thấp thực chất là nhiễu dither/độn giả lập, không phải độ động 24-bit thực tế.`;
-  }
-
-  if (data.is_padded) {
+  // Tách biệt rạch ròi: Chỉ hiển thị chèn bit khi có bit chèn thực tế (wasted_bits > 0 hoặc is_padded)
+  if (data.is_padded || data.wasted_bits > 0) {
     return `Các bit thấp LSB cố định bằng 0. Tệp âm thanh thực tế chỉ là ${data.effective}-bit bị chèn thêm ${data.wasted_bits} bit 0 để giả mạo thành container ${data.declared}-bit.`;
   }
 
@@ -57,10 +53,13 @@ export function localizeBitDepthDetail(
   }
 
   if (data.effective >= data.declared - 1) {
+    if (spectral.is_brickwall && !spectral.is_studio_filter) {
+      return `Đủ ${data.declared}-bit dữ liệu (Lưu ý: Nếu nguồn gốc là lossy, các bit thấp có thể do quá trình giải mã tạo ra).`;
+    }
     return `Xác nhận độ sâu bit thực tế đạt chuẩn ${data.declared}-bit (sử dụng trọn vẹn ${data.effective} mặt phẳng bit hoạt động).`;
   }
 
-  return `Khai báo ${data.declared}-bit, thực tế sử dụng ${data.effective}-bit (lãng phí ${data.wasted_bits} mặt phẳng bit trống).`;
+  return `Khai báo ${data.declared}-bit, thực tế sử dụng ${data.effective}-bit (${data.wasted_bits} mặt phẳng bit trống).`;
 }
 
 /**
@@ -76,10 +75,9 @@ export function localizeSpectralCutoffDetail(
 
   if (data.is_studio_filter && data.detected_cutoff_hz) {
     const fc = (data.detected_cutoff_hz / 1000).toFixed(2);
-    const nyquist = (data.nyquist_hz / 1000).toFixed(2);
     const slope = data.rolloff_slope_db_per_khz ? Math.abs(data.rolloff_slope_db_per_khz).toFixed(1) : '—';
-    if (data.detected_cutoff_hz >= 21000) {
-      return `Tần số cắt tại ${fc} kHz (độ dốc ${slope} dB/kHz) sát ngưỡng Nyquist (${nyquist} kHz) là đặc tính chuẩn của Bộ lọc chống dội âm phòng thu (Studio Anti-Aliasing Filter). Toàn bộ dải phổ âm thanh 44.1 kHz nguyên bản đầy đủ, độ sâu bit 16-bit đạt chuẩn.`;
+    if (data.detected_cutoff_hz >= 20500) {
+      return `Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter) tại ${fc} kHz (độ dốc ${slope} dB/kHz). Tỷ lệ lỗ nén MDCT đạt chuẩn sạch, dải thông âm nhạc phòng thu được bảo toàn nguyên vẹn.`;
     }
     return `Phát hiện Bộ lọc dải cao kỹ thuật số phòng thu (Digital Master Filter) tại ${fc} kHz (độ dốc ${slope} dB/kHz). Đây là thiết lập chuẩn khi xuất bản nhạc số (Mora / Apple Music) nhằm tối ưu DAC và triệt tiêu nhiễu siêu cao. Toàn bộ phổ âm thanh 20 kHz nguyên bản đầy đủ, không có vết cắt nén lossy.`;
   }

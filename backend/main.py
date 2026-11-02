@@ -154,21 +154,7 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
         float32_mono, sample_rate, is_dsd, freqs, smoothed_profile
     )
 
-    # Cross-validate bit depth against lossy spectral cutoff:
-    # A true 24-bit studio recording does not brickwall at lossy codec limits (16-20 kHz).
-    if spectral_result.is_brickwall and not spectral_result.is_studio_filter and bit_depth_result.declared >= 24 and not bit_depth_result.is_padded:
-        bit_depth_result.suspicious_scaling = True
-        cutoff_str = (
-            f" at {spectral_result.detected_cutoff_hz/1000:.1f} kHz"
-            if spectral_result.detected_cutoff_hz
-            else ""
-        )
-        bit_depth_result.detail = (
-            f"Declared {bit_depth_result.declared}-bit container, but audio has a brickwall cutoff{cutoff_str} "
-            f"typical of lossy compression. Lower bits are synthetic dither / padding."
-        )
-
-    # Studio Anti-Aliasing Filter verification with authentic 16-bit/24-bit audio:
+    # Studio Anti-Aliasing & Studio Master Filter verification (Cross-check):
     fc = spectral_result.detected_cutoff_hz
     if fc is not None:
         slope_val = spectral_result.rolloff_slope_db_per_khz or 0.0
@@ -184,14 +170,20 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
             if sample_rate <= 44_100
             else (fc >= spectral_result.nyquist_hz * 0.95)
         )
-        # 2. Studio Digital Master Filter (20.0 - 21.0 kHz with clean MDCT)
+        # 2. Studio Master Filter: fc >= 20.5 kHz VÀ Tỷ lệ lỗ nén MDCT = Thấp (Đạt chuẩn)
+        is_studio_master = (
+            fc >= 20_500.0
+            and not anti_spoof_result.holes_detected
+            and anti_spoof_result.spectral_holes_ratio < 0.15
+        )
+        # 3. Studio Digital Master Filter (20.0 - 20.5 kHz with clean MDCT)
         is_digital_master = (
             fc >= 20_000.0
             and anti_spoof_result.spectral_holes_ratio < 0.04
             and not anti_spoof_result.holes_detected
         )
 
-        if (is_studio_nyquist or is_digital_master) and is_authentic_bits:
+        if (is_studio_nyquist or is_studio_master or is_digital_master) and is_authentic_bits:
             spectral_result.is_studio_filter = True
             spectral_result.is_brickwall = False
             if is_studio_nyquist:
@@ -201,6 +193,13 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
                     f"(slope {slope_val:.1f} dB/kHz) near Nyquist boundary. "
                     "Preserves genuine Redbook CD audio bandwidth."
                 )
+            elif is_studio_master:
+                spectral_result.suspected_source_encoder = "Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter)"
+                spectral_result.detail = (
+                    f"Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter) phát hiện tại {fc/1000:.2f} kHz "
+                    f"(độ dốc {slope_val:.1f} dB/kHz). Tỷ lệ lỗ nén MDCT đạt chuẩn ({anti_spoof_result.spectral_holes_ratio:.1%}). "
+                    "Toàn bộ dải phổ âm thanh nguyên bản phòng thu được bảo toàn."
+                )
             else:
                 spectral_result.suspected_source_encoder = "Studio Digital Master Filter (Mora / Digital Master)"
                 spectral_result.detail = (
@@ -209,6 +208,14 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
                     "Standard digital mastering filter for online distribution (Mora / Apple Music / CD). "
                     "Full 20 kHz original audio bandwidth preserved with clean MDCT."
                 )
+
+    # Module Độ Sâu Bit: Chỉ được phép kết luận dựa trên dữ liệu bit thực tế (LSB bit-histograms).
+    # Tuyệt đối không can thiệp vào is_padded hay suspicious_scaling dựa trên các module khác.
+    # Nếu đủ 24-bit hoạt động nhưng nghi ngờ nguồn lossy, chỉ ghi cảnh báo giải thích:
+    if spectral_result.is_brickwall and not spectral_result.is_studio_filter and bit_depth_result.declared >= 24 and not bit_depth_result.is_padded and not bit_depth_result.suspicious_scaling:
+        bit_depth_result.detail = (
+            f"Đủ {bit_depth_result.declared}-bit dữ liệu (Lưu ý: Nếu nguồn gốc là lossy, các bit thấp có thể do quá trình giải mã tạo ra)"
+        )
 
     # ── Phase 2.5: Advanced Detection Modules ────────────────────────────
     # Module A: Phase & Transient Coherence Check
