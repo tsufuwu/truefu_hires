@@ -154,6 +154,25 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
         float32_mono, sample_rate, is_dsd, freqs, smoothed_profile
     )
 
+    # Khi sample_rate >= 88200 mà bị đánh rớt ở bài kiểm tra siêu âm (R < 0.15 hoặc cutoff_freq < 22.5 kHz):
+    # Đổi giá trị hiển thị của NÂNG TẦN GIẢ từ Không thành Có (Phát hiện Upsample)
+    if sample_rate >= 88_200 and ultrasonic_result.applicable:
+        fc_val = spectral_result.detected_cutoff_hz
+        is_failing_ultrasonic = (
+            (fc_val is not None and fc_val < 22_500.0)
+            or (ultrasonic_result.ultrasonic_correlation is not None and ultrasonic_result.ultrasonic_correlation < 0.15)
+            or (ultrasonic_result.has_true_ultrasonic_transients is False)
+        )
+        if is_failing_ultrasonic:
+            ultrasonic_result.fake_hires_upsampled = True
+            if fc_val is not None and fc_val < 22_500.0:
+                ultrasonic_result.detail = (
+                    f"Phát hiện nâng tần giả (Upsampled Hi-Res): Phổ tần bị giới hạn ở {fc_val/1000:.2f} kHz, "
+                    "hoàn toàn thiếu dải siêu âm thực (>24 kHz)."
+                )
+                if fc_val >= 19_500.0:
+                    spectral_result.suspected_source_encoder = "MP3 ~320 kbps (LAME) / Opus 160+ kbps / 44.1kHz Upsampled"
+
     # Studio Anti-Aliasing & Studio Master Filter verification (Cross-check):
     fc = spectral_result.detected_cutoff_hz
     if fc is not None:

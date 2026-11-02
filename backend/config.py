@@ -68,7 +68,7 @@ STOPBAND_MAX_STD_DB        = 12.0   # Stopband variance tolerance (permits dithe
 ENCODER_BANDS = [
     (14_000, 16_800, "MP3 ~128 kbps / YouTube AAC / Vorbis"),
     (16_800, 19_500, "MP3 ~192–256 kbps / AAC 192 kbps"),
-    (19_500, 20_000, "MP3 ~320 kbps (LAME) / Opus 160+ kbps"),
+    (19_500, 20_000, "MP3 ~320 kbps (LAME) / Opus 160+ kbps / 44.1kHz Upsampled"),
     (20_000, 21_000, "Studio Digital Master Filter (Mora / Digital Master)"),
     (21_000, float("inf"), "Studio Anti-Aliasing Filter (Redbook CD)"),
 ]

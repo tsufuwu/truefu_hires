@@ -446,7 +446,13 @@ function UltrasonicCard({
         <Metric label={t.ultrasonic.applicable} value={data.applicable ? t.ultrasonic.applicableYes : t.ultrasonic.applicableNo} />
         <Metric
           label={t.ultrasonic.upsampled}
-          value={!data.applicable ? '—' : data.fake_hires_upsampled ? t.ultrasonic.yes : t.ultrasonic.no}
+          value={
+            !data.applicable
+              ? '—'
+              : (data.fake_hires_upsampled || data.has_true_ultrasonic_transients === false || (data.ultrasonic_correlation != null && data.ultrasonic_correlation < 0.15))
+              ? t.ultrasonic.yes
+              : t.ultrasonic.no
+          }
         />
         <Metric
           label={t.ultrasonic.ultrasonicHarmonics}
