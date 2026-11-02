@@ -45,6 +45,9 @@ class SpectralCutoffSchema(BaseModel):
     suspected_source_encoder: Optional[str] = None
     detail: str
     hf_energy_14_20_db: Optional[float] = None
+    active_cutoff_ratio: Optional[float] = None
+    cutoff_std_khz: Optional[float] = None
+    pre_cutoff_energy_db: Optional[float] = None
 
 
 class AntiSpoofSchema(BaseModel):

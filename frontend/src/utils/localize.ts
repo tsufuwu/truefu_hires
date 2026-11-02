@@ -170,6 +170,16 @@ export function localizeVerdictSummary(
   const items = raw.split(';').map(s => s.trim()).filter(Boolean);
 
   const translatedItems = items.map(item => {
+    // 0. Vietnamese direct pass-through for 3-tier brickwall rules:
+    if (
+      item.startsWith('Cắt cụt nhân tạo') ||
+      item.startsWith('Vết cắt dốc đứng (Hard Brickwall)') ||
+      item.startsWith('Giới hạn âm học tự nhiên tại') ||
+      item.startsWith('Nghi vấn giới hạn băng thông')
+    ) {
+      return item;
+    }
+
     // 1. Brickwall cutoff
     const bwMatch = item.match(/(?:Severe brickwall cutoff|Brickwall cutoff|Brickwall|High-frequency cutoff) at ([\d\.]+) kHz \(([^\)]+)\): likely (.+) \((-?\d+)\)/i);
     if (bwMatch) {

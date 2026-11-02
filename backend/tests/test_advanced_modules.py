@@ -299,4 +299,79 @@ class TestDSPRuleRequirements:
         # Even if severe slope lowers score, confidence MUST NOT be HIGH
         assert verdict.confidence != "HIGH"
 
+    def test_segment1_hard_brickwall_128k_youtube(self):
+        # Segment 1A: Hard Brickwall at 16.31 kHz (YouTube AAC/MP3 128k) -> Score <= 35, FAKE_UPSCALED, HIGH confidence
+        from schemas import BitDepthSchema, SpectralCutoffSchema, AntiSpoofSchema, UltrasonicSchema
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24, effective=24, wasted_bits=0, is_padded=False, suspicious_scaling=False, detail="24-bit"
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=22050.0,
+            detected_cutoff_hz=16310.0,
+            rolloff_slope_db_per_khz=-85.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 128k",
+            detail="Cutoff at 16.31 kHz",
+            hf_energy_14_20_db=-52.0,
+            active_cutoff_ratio=0.45,
+            cutoff_std_khz=0.18,
+            pre_cutoff_energy_db=-48.0,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.0,
+            holes_detected=False,
+            hf_envelope_correlation=0.6,
+            fake_noise_injected=False,
+            detail="Clean",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=False, ultrasonic_correlation=0.0, has_true_ultrasonic_transients=False, fake_hires_upsampled=False, detail="N/A"
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        assert verdict.score <= 35
+        assert verdict.status == "FAKE_UPSCALED"
+        assert verdict.confidence == "HIGH"
+        assert "128kbps / YouTube AAC" in verdict.label
+
+    def test_segment1_sparse_acoustic_ambient_pass(self):
+        # Segment 1B: True sparse acoustic (ambient/minimalist piano) with very low energy < -75 dBFS
+        from schemas import BitDepthSchema, SpectralCutoffSchema, AntiSpoofSchema, UltrasonicSchema
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24, effective=24, wasted_bits=0, is_padded=False, suspicious_scaling=False, detail="24-bit"
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=22050.0,
+            detected_cutoff_hz=16500.0,
+            rolloff_slope_db_per_khz=-20.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="unknown",
+            detail="Cutoff at 16.5 kHz",
+            hf_energy_14_20_db=-82.0,
+            active_cutoff_ratio=0.08,
+            cutoff_std_khz=0.95,
+            pre_cutoff_energy_db=-78.0,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.0,
+            holes_detected=False,
+            hf_envelope_correlation=0.8,
+            fake_noise_injected=False,
+            detail="Clean",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=False, ultrasonic_correlation=0.0, has_true_ultrasonic_transients=False, fake_hires_upsampled=False, detail="N/A"
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        assert verdict.score >= 75
+        assert verdict.status == "SUSPICIOUS_BANDWIDTH_LIMIT"
+        assert "Bản phối mộc ít âm cao" in verdict.label
+
 

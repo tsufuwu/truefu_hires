@@ -352,6 +352,52 @@ def analyze_spectral_cutoff(
     band_14_20 = (freqs >= 14_000.0) & (freqs <= min(20_000.0, nyquist))
     hf_energy_14_20 = float(np.mean(smoothed[band_14_20])) if band_14_20.sum() > 0 else -100.0
 
+    # ── 3. Phép đo phân biệt Suy giảm tự nhiên vs Cắt cụt nhân tạo ──────────
+    active_cutoff_ratio: Optional[float] = None
+    cutoff_std_khz: Optional[float] = None
+    pre_cutoff_energy_db: Optional[float] = None
+
+    if cutoff_hz is not None:
+        # Năng lượng sát mép cắt (Pre-cutoff energy) trong dải [cutoff_hz - 1.5 kHz, cutoff_hz]:
+        pre_band = (freqs >= max(0.0, cutoff_hz - 1500.0)) & (freqs <= cutoff_hz)
+        pre_cutoff_energy_db = float(np.mean(smoothed[pre_band])) if pre_band.sum() > 0 else -100.0
+
+        # Các frame có âm lượng thực tế
+        mid_band = (freqs >= 1000.0) & (freqs <= 8000.0)
+        frame_mid_e = np.percentile(magnitude_db[mid_band, :], 85, axis=0) if mid_band.sum() > 0 else np.mean(magnitude_db, axis=0)
+        audible_frames = frame_mid_e > -58.0
+        if audible_frames.sum() < 5:
+            audible_frames = np.ones(total_frames, dtype=bool)
+
+        # Chỉ số 1: Mật độ khung thời gian chạm trần (active_cutoff_ratio)
+        f_pre = max(0.0, cutoff_hz - 500.0)
+        f_post = min(nyquist, cutoff_hz + 500.0)
+        idx_pre = int(np.argmin(np.abs(freqs - f_pre)))
+        idx_post = int(np.argmin(np.abs(freqs - f_post)))
+
+        pre_e = magnitude_db[idx_pre, audible_frames]
+        post_e = magnitude_db[idx_post, audible_frames]
+        hits = (
+            ((pre_e > -65.0) & (post_e < -90.0))
+            | ((pre_e > -75.0) & ((pre_e - post_e) >= 22.0))
+        )
+        active_cutoff_ratio = float(np.mean(hits)) if audible_frames.sum() > 0 else 0.0
+
+        # Chỉ số 2: Độ lệch chuẩn của đỉnh tần số theo thời gian (cutoff_std_khz)
+        fmax_list = []
+        audible_indices = np.where(audible_frames)[0]
+        for t_idx in audible_indices:
+            bins_above = np.where(magnitude_db[:, t_idx] > -82.0)[0]
+            if len(bins_above) > 0:
+                f_max_khz = float(freqs[bins_above[-1]] / 1000.0)
+                if f_max_khz >= 8.0:
+                    fmax_list.append(f_max_khz)
+
+        if len(fmax_list) >= 5:
+            cutoff_std_khz = float(np.std(fmax_list))
+        else:
+            cutoff_std_khz = 1.2
+
     return (
         SpectralCutoffSchema(
             nyquist_hz=nyquist,
@@ -362,6 +408,9 @@ def analyze_spectral_cutoff(
             suspected_source_encoder=encoder,
             detail=detail,
             hf_energy_14_20_db=round(hf_energy_14_20, 2),
+            active_cutoff_ratio=round(active_cutoff_ratio, 3) if active_cutoff_ratio is not None else None,
+            cutoff_std_khz=round(cutoff_std_khz, 3) if cutoff_std_khz is not None else None,
+            pre_cutoff_energy_db=round(pre_cutoff_energy_db, 2) if pre_cutoff_energy_db is not None else None,
         ),
         freqs,
         smoothed,

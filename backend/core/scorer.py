@@ -103,57 +103,111 @@ def score_and_verdict(
 
     # ── 1. HARD EVIDENCE EVALUATION (Bằng chứng thép) ─────────────────────────
 
-    # A. Brickwall cutoffs
+    # A. Brickwall cutoffs & 3-Tier Segmentation
     if fc is not None and is_lossy_brickwall:
-        # ── Rule 7: Gatekeeping giữa Brickwall và MDCT ────────────────────────
-        # Không bao giờ được phép gán nhãn "Lossless Giả (Độ tin cậy cao)" nếu chỉ dựa vào
-        # DUY NHẤT tiêu chí cutoff_freq < 20 kHz trong khi MDCT Holes == 0% và Bit Depth == Đạt chuẩn.
+        active_ratio = getattr(spectral, "active_cutoff_ratio", None) or 0.0
+        std_khz = getattr(spectral, "cutoff_std_khz", None)
+        if std_khz is None:
+            std_khz = 1.0
+        pre_energy = getattr(spectral, "pre_cutoff_energy_db", None)
+        if pre_energy is None:
+            pre_energy = -100.0
+        slope_val = spectral.rolloff_slope_db_per_khz or 0.0
         hf_energy_14_20 = getattr(spectral, "hf_energy_14_20_db", None)
         if hf_energy_14_20 is None:
             hf_energy_14_20 = -100.0
 
         is_strict_clean_mdct = (anti_spoof.spectral_holes_ratio <= 0.01 and not anti_spoof.holes_detected)
-        no_other_fakes = (
-            not anti_spoof.fake_noise_injected
-            and (advanced is None or not advanced.ai_artifacts.ai_artifacts_detected)
-            and (advanced is None or not advanced.phase_coherence.is_stealth_noise_layer)
-        )
 
-        is_isolated_sparse_limit = (
-            fc < 19_500.0
-            and is_strict_clean_mdct
-            and is_authentic_bits
-            and no_other_fakes
-            and (spectral.rolloff_slope_db_per_khz is None or abs(spectral.rolloff_slope_db_per_khz) < 50.0)
-        )
+        # ── PHÂN KHÚC 1: fc <= 17.5 kHz (Vùng nguy hiểm của MP3 128k / YouTube AAC 128k) ──
+        if fc <= 17_500.0:
+            # Trường hợp 1A: Cắt cụt nhân tạo (Hard Brickwall)
+            is_hard_brickwall_128k = (
+                active_ratio >= 0.25
+                or std_khz < 0.40
+                or (slope_val <= -25.0 and pre_energy > -60.0)
+            )
 
-        if is_isolated_sparse_limit:
-            score -= 20
-            flags.append("SUSPICIOUS_BANDWIDTH_LIMIT")
-            soft_anomalies.append("isolated_bandwidth_limit")
-            deductions.append(
-                f"Nghi vấn giới hạn băng thông tại {fc/1000:.1f} kHz không kèm lỗ nén MDCT hay chèn bit giả (-20)"
+            # Trường hợp 1B: Nhạc mộc thưa thực sự (rất ít âm cao, năng lượng dải 10-16k cực thấp)
+            is_sparse_acoustic_128k = (
+                active_ratio < 0.15
+                and (pre_energy < -75.0 or hf_energy_14_20 < -75.0)
+                and is_strict_clean_mdct
             )
-        elif fc <= 16_800:
-            score -= SCORE_DEDUCTIONS["brickwall_low"]
-            flags.append("FAKE_UPSCALED")
-            hard_evidences.append("brickwall_low")
-            deductions.append(
-                f"Severe brickwall cutoff at {fc/1000:.2f} kHz (<=16.8 kHz): likely MP3 128k/YouTube transcode (-{SCORE_DEDUCTIONS['brickwall_low']})"
+
+            if is_hard_brickwall_128k:
+                # BẤT CHẤP MDCT Holes == 0% và Bit Depth == 24-bit:
+                # BẮT BUỘC kết luận: Lossless Giả (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC) với Độ tin cậy cao
+                score -= 68
+                flags.append("FAKE_UPSCALED_128K")
+                hard_evidences.append("brickwall_low_hard")
+                deductions.append(
+                    f"Cắt cụt nhân tạo (Hard Brickwall) tại {fc/1000:.2f} kHz "
+                    f"(mật độ chạm trần {active_ratio:.1%}, độ tản mác đỉnh {std_khz:.2f} kHz, dốc {slope_val:.1f} dB/kHz): "
+                    f"đặc trưng nguồn Lossy ~128kbps / YouTube AAC (-68)"
+                )
+            elif is_sparse_acoustic_128k:
+                score -= 20
+                flags.append("SUSPICIOUS_BANDWIDTH_LIMIT")
+                soft_anomalies.append("isolated_bandwidth_limit")
+                deductions.append(
+                    f"Nghi vấn giới hạn băng thông tại {fc/1000:.1f} kHz "
+                    f"(bản phối mộc ít âm cao, năng lượng dải cao rất thấp {pre_energy:.1f} dBFS) (-20)"
+                )
+            else:
+                score -= 65
+                flags.append("FAKE_UPSCALED")
+                hard_evidences.append("brickwall_low")
+                deductions.append(
+                    f"Severe brickwall cutoff at {fc/1000:.2f} kHz (<=17.5 kHz): likely MP3 128k/YouTube transcode (-65)"
+                )
+
+        # ── PHÂN KHÚC 2: 17.5 kHz < fc < 20.0 kHz (Vùng MP3 192–256k / Vorbis / AAC 192k) ──
+        elif fc < 20_000.0:
+            is_hard_brickwall_mid = (
+                (active_ratio >= 0.30 and std_khz < 0.35)
+                or (anti_spoof.spectral_holes_ratio > 0.05)
+                or anti_spoof.holes_detected
             )
-        elif fc <= 19_500:
-            score -= SCORE_DEDUCTIONS["brickwall_mid"]
-            flags.append("FAKE_UPSCALED")
-            hard_evidences.append("brickwall_mid")
-            deductions.append(
-                f"Brickwall cutoff at {fc/1000:.2f} kHz (16.8-19.5 kHz): likely MP3 192-256k/AAC transcode (-{SCORE_DEDUCTIONS['brickwall_mid']})"
+            is_acoustic_undulation_mid = (
+                std_khz >= 0.50
+                and is_strict_clean_mdct
             )
-        elif fc <= 20_700:
-            score -= SCORE_DEDUCTIONS["brickwall_high"]
+
+            if is_hard_brickwall_mid:
+                score -= 55
+                flags.append("FAKE_UPSCALED")
+                hard_evidences.append("brickwall_mid")
+                deductions.append(
+                    f"Vết cắt dốc đứng (Hard Brickwall) tại {fc/1000:.2f} kHz "
+                    f"(chạm trần {active_ratio:.1%}, tản mác {std_khz:.2f} kHz): "
+                    f"đặc trưng nén Lossy 192–256kbps (-55)"
+                )
+            elif is_acoustic_undulation_mid:
+                score -= 15
+                flags.append("SUSPICIOUS_ACOUSTIC_LIMIT")
+                soft_anomalies.append("acoustic_sparse_limit")
+                deductions.append(
+                    f"Giới hạn âm học tự nhiên tại {fc/1000:.1f} kHz "
+                    f"(đỉnh phổ nhấp nhô tự nhiên std={std_khz:.2f} kHz, sạch lỗ nén MDCT) (-15)"
+                )
+            else:
+                score -= 50
+                flags.append("SUSPICIOUS_TRANSCODE")
+                hard_evidences.append("brickwall_mid")
+                deductions.append(
+                    f"Brickwall cutoff at {fc/1000:.2f} kHz: likely MP3 192-256k/AAC transcode (-50)"
+                )
+
+        # ── PHÂN KHÚC 3: fc >= 20.0 kHz ──
+        # Đã được xử lý ở Rule 3 (Studio Master / Digital Master Filter) bên trên,
+        # nếu lọt xuống đây thì là brickwall thông thường ở dải siêu cao
+        else:
+            score -= SCORE_DEDUCTIONS.get("brickwall_high", 50)
             flags.append("SUSPICIOUS_TRANSCODE")
             hard_evidences.append("brickwall_high")
             deductions.append(
-                f"High-frequency cutoff at {fc/1000:.2f} kHz (19.5-20.7 kHz): likely MP3 320k/Opus (-{SCORE_DEDUCTIONS['brickwall_high']})"
+                f"High-frequency cutoff at {fc/1000:.2f} kHz: likely MP3 320k/Opus (-{SCORE_DEDUCTIONS.get('brickwall_high', 50)})"
             )
 
     # B. Fake noise injection & stealth noise layer
@@ -273,6 +327,7 @@ def score_and_verdict(
     # Single moderate evidence alone (e.g. only brickwall_high at 20.2k, or only MDCT holes) stays in SUSPICIOUS (60–84).
     severe_evidences = {
         "brickwall_low",
+        "brickwall_low_hard",
         "brickwall_mid",
         "fake_noise",
         "stealth_noise",
@@ -292,8 +347,6 @@ def score_and_verdict(
 
     # ── 4. FOUR-TIER STATUS & LABEL ASSIGNMENT ───────────────────────────────
     # Rule 7: Đồng bộ Logic Kết Luận Tổng (Final Verdict & Confidence Score)
-    # Không bao giờ được phép gán nhãn "Lossless Giả (Độ tin cậy cao)" nếu chỉ dựa vào DUY NHẤT
-    # tiêu chí cutoff_freq < 20 kHz trong khi MDCT Holes == 0% và Bit Depth == Đạt chuẩn.
     only_cutoff_evidence = (
         len(hard_evidences) == 1
         and any(e in ("brickwall_low", "brickwall_mid", "brickwall_high") for e in hard_evidences)
@@ -301,16 +354,20 @@ def score_and_verdict(
         and (not bit_depth.is_padded and not bit_depth.suspicious_scaling)
     )
 
-    if score >= VERDICT_AUTHENTIC:
+    if "FAKE_UPSCALED_128K" in flags or "brickwall_low_hard" in hard_evidences:
+        status = "FAKE_UPSCALED"
+        label = f"Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC, cutoff {fc/1000:.2f} kHz)" if fc else "Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC)"
+        confidence = "HIGH"
+    elif score >= VERDICT_AUTHENTIC:
         status = "AUTHENTIC_LOSSLESS"
         label = "Authentic Lossless"
         confidence = "HIGH" if score >= 90 else "MEDIUM"
     elif score >= VERDICT_SUSPICIOUS:
         # 60–84: Suspicious / Anomaly (Màu vàng)
-        if "SUSPICIOUS_BANDWIDTH_LIMIT" in flags:
-            status = "SUSPICIOUS_BANDWIDTH_LIMIT"
-        elif "SUSPICIOUS_ACOUSTIC_LIMIT" in flags:
+        if "SUSPICIOUS_ACOUSTIC_LIMIT" in flags:
             status = "SUSPICIOUS_ACOUSTIC_LIMIT"
+        elif "SUSPICIOUS_BANDWIDTH_LIMIT" in flags:
+            status = "SUSPICIOUS_BANDWIDTH_LIMIT"
         elif "SUSPICIOUS_TRANSCODE" in flags:
             status = "SUSPICIOUS_TRANSCODE"
         elif "SUSPICIOUS_ANOMALY" in flags or "natural_decay_knee" in soft_anomalies:
@@ -324,9 +381,12 @@ def score_and_verdict(
     else:
         # 0–59: Confirmed Fake / Transcode
         status = flags[0] if flags else "FAKE_UPSCALED"
+        if status == "FAKE_UPSCALED_128K":
+            status = "FAKE_UPSCALED"
         label = _make_label(status, fc, anti_spoof)
-        # Tuyệt đối không để HIGH confidence nếu chỉ có duy nhất cutoff mà MDCT Holes sạch và Bit Depth chuẩn
-        if only_cutoff_evidence:
+        if "brickwall_low_hard" in hard_evidences:
+            confidence = "HIGH"
+        elif only_cutoff_evidence:
             confidence = "MEDIUM"
         else:
             confidence = "HIGH" if score <= 40 else "MEDIUM"
@@ -363,12 +423,14 @@ def _make_label(
     anti_spoof: AntiSpoofSchema,
 ) -> str:
     if status == "SUSPICIOUS_BANDWIDTH_LIMIT":
-        return f"Nghi vấn giới hạn băng thông ({fc/1000:.1f} kHz) / Cần kiểm tra thủ công" if fc else "Nghi vấn giới hạn băng thông / Cần kiểm tra thủ công"
+        return f"Nghi vấn giới hạn băng thông ({fc/1000:.1f} kHz) / Bản phối mộc ít âm cao" if fc else "Nghi vấn giới hạn băng thông / Bản phối mộc ít âm cao"
     if status == "SUSPICIOUS_ACOUSTIC_LIMIT":
-        return "Giới hạn âm học tự nhiên (Bản thu ít nhạc cụ dải cao) hoặc nghi vấn cắt tần — Cần kiểm tra đỉnh phổ cục bộ"
-    if status == "SUSPICIOUS_ANOMALY":
-        return "Suspicious / Mastering Anomaly (Unusual Roll-Off Characteristic)"
+        return "Giới hạn âm học tự nhiên (Bản phối ít nhạc cụ dải cao)"
+    if status == "FAKE_UPSCALED_128K":
+        return f"Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC, cutoff {fc/1000:.2f} kHz)" if fc else "Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC)"
     if status == "FAKE_UPSCALED":
+        if fc and fc <= 17_500:
+            return f"Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC, cutoff {fc/1000:.2f} kHz)"
         if fc:
             return f"Fake Lossless (Transcoded from lossy source, cutoff {fc/1000:.2f} kHz)"
         return "Fake Lossless (Transcoded from lossy source)"

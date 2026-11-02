@@ -76,7 +76,7 @@ ENCODER_BANDS = [
 # ── Anti-spoof detection ─────────────────────────────────────────────────────
 HOLE_BAND_LOW_HZ  = 12_000.0
 HOLE_BAND_HIGH_HZ = 15_800.0
-HOLE_DROP_DB      = 35.0
+HOLE_DROP_DB      = 24.0        # Ngưỡng phát hiện lỗ thủng MDCT/AAC cục bộ (22-25 dB)
 HOLE_RATIO_THRESH = 0.38        # R_hole > this → SPECTRAL_HOLES_DETECTED
 
 MID_BAND_LOW_HZ  =  3_000.0
