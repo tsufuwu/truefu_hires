@@ -398,7 +398,14 @@ def analyze_spectral_cutoff(
                     fmax_list.append(f_max_khz)
 
         if len(fmax_list) >= 5:
-            cutoff_std_khz = float(np.std(fmax_list))
+            # Lọc trung vị medfilt (kernel_size=3 hoặc 5) theo trục thời gian để loại bỏ các tia nhiễu xung đơn lẻ
+            # (single-frame click/boundary spikes tại giây 10, 20, 30) làm lệch độ tản mác
+            k_size = 5 if len(fmax_list) >= 5 else 3
+            if k_size % 2 == 0:
+                k_size -= 1
+            fmax_arr = np.array(fmax_list, dtype=np.float64)
+            filtered_fmax = signal.medfilt(fmax_arr, kernel_size=k_size)
+            cutoff_std_khz = float(np.std(filtered_fmax))
         else:
             cutoff_std_khz = 1.2
 

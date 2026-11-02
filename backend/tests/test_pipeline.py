@@ -503,5 +503,176 @@ class TestStudioAntiAliasingFilter:
         assert verdict.confidence == "HIGH", f"Expected HIGH confidence, got {verdict.confidence}"
         assert "YouTube AAC" in verdict.label
 
+    def test_cutoff_19_68k_high_variance_not_hard_brickwall(self):
+        """
+        Verify Requirement 1 & 2:
+        File with fc = 19.68 kHz, active_cutoff_ratio = 58.3% but high dispersion std = 1.71 kHz
+        must NOT be classified as Hard Brickwall (requires both active_ratio >= 30% AND std < 0.45).
+        It must receive natural acoustic limit status (SUSPICIOUS_ACOUSTIC_LIMIT) and score >= 80,
+        with banner reflecting 'nguồn nén cận chuẩn (MP3 320kbps / AAC 256k / Opus) hoặc giới hạn 44.1kHz'.
+        """
+        from schemas import (
+            BitDepthSchema,
+            SpectralCutoffSchema,
+            AntiSpoofSchema,
+            UltrasonicSchema,
+        )
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=16,
+            effective=16,
+            wasted_bits=0,
+            is_padded=False,
+            suspicious_scaling=False,
+            detail="16-bit genuine",
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=22050.0,
+            detected_cutoff_hz=19680.0,
+            rolloff_slope_db_per_khz=-28.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 ~320 kbps (LAME) / Opus 160+ kbps",
+            detail="Cutoff at 19.68 kHz",
+            hf_energy_14_20_db=-70.0,
+            active_cutoff_ratio=0.583,
+            cutoff_std_khz=1.71,
+            pre_cutoff_energy_db=-65.0,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.0000,
+            holes_detected=False,
+            hf_envelope_correlation=0.60,
+            fake_noise_injected=False,
+            detail="Clean MDCT",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=False,
+            has_true_ultrasonic_transients=None,
+            fake_hires_upsampled=False,
+            ultrasonic_correlation=None,
+            detail="N/A",
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        # Must not be hard brickwall fake (which drops 55 points to 45).
+        # It gets natural undulation deduction (-15) -> 85
+        assert verdict.score >= 80, f"Expected score >= 80, got {verdict.score}"
+        assert verdict.status == "SUSPICIOUS_ACOUSTIC_LIMIT"
+
+    def test_fake_hires_upsampled_case_a_cd_source(self):
+        """
+        Verify Requirement 3 (Case A):
+        96 kHz Hi-Res container with cutoff in 19.5 - 22.05 kHz (e.g. 20.5 kHz) and clean MDCT (0%)
+        with failed ultrasonic module (R < 0.15) must be classified as:
+        'Hi-Res Giả (Upsampled từ nguồn 44.1kHz / CD hoặc Lossy 320k)' with RED score (45-55).
+        """
+        from schemas import (
+            BitDepthSchema,
+            SpectralCutoffSchema,
+            AntiSpoofSchema,
+            UltrasonicSchema,
+        )
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24,
+            effective=24,
+            wasted_bits=0,
+            is_padded=False,
+            suspicious_scaling=False,
+            detail="24-bit container",
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=48000.0,  # 96 kHz container
+            detected_cutoff_hz=20500.0,
+            rolloff_slope_db_per_khz=-30.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 ~320 kbps (LAME)",
+            detail="Cutoff at 20.5 kHz",
+            active_cutoff_ratio=0.85,
+            cutoff_std_khz=0.20,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.0000,
+            holes_detected=False,
+            hf_envelope_correlation=0.5,
+            fake_noise_injected=False,
+            detail="Clean MDCT",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=True,
+            has_true_ultrasonic_transients=False,
+            fake_hires_upsampled=True,
+            ultrasonic_correlation=0.02,
+            detail="No ultrasonic energy",
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        assert 45 <= verdict.score <= 55, f"Expected score in 45-55 (RED), got {verdict.score}"
+        assert verdict.status == "FAKE_HIRES_UPSAMPLED"
+        assert verdict.confidence == "HIGH"
+        assert "Hi-Res Giả (Upsampled từ nguồn 44.1kHz / CD hoặc Lossy 320k)" in verdict.label
+        assert "96 kHz" in verdict.summary
+        assert "20.5 kHz" in verdict.summary
+
+    def test_fake_hires_upsampled_case_b_lossy_source(self):
+        """
+        Verify Requirement 3 (Case B):
+        96 kHz Hi-Res container with cutoff < 19.5 kHz (e.g. 16.5 kHz) and failed ultrasonic module
+        must be classified as:
+        'Lossless / Hi-Res Giả (Upsampled từ nguồn nén Lossy)' with RED score <= 35.
+        """
+        from schemas import (
+            BitDepthSchema,
+            SpectralCutoffSchema,
+            AntiSpoofSchema,
+            UltrasonicSchema,
+        )
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24,
+            effective=24,
+            wasted_bits=0,
+            is_padded=False,
+            suspicious_scaling=False,
+            detail="24-bit container",
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=48000.0,
+            detected_cutoff_hz=16500.0,
+            rolloff_slope_db_per_khz=-25.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 ~128 kbps",
+            detail="Cutoff at 16.5 kHz",
+            active_cutoff_ratio=0.70,
+            cutoff_std_khz=0.25,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.06,
+            holes_detected=True,
+            hf_envelope_correlation=0.3,
+            fake_noise_injected=False,
+            detail="MDCT holes detected",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=True,
+            has_true_ultrasonic_transients=False,
+            fake_hires_upsampled=True,
+            ultrasonic_correlation=0.01,
+            detail="No ultrasonic energy",
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        assert verdict.score <= 35, f"Expected score <= 35 (RED), got {verdict.score}"
+        assert verdict.status == "FAKE_HIRES_LOSSY"
+        assert verdict.confidence == "HIGH"
+        assert "Lossless / Hi-Res Giả (Upsampled từ nguồn nén Lossy)" in verdict.label
+
+
 
 

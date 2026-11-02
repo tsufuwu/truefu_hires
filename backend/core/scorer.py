@@ -101,10 +101,49 @@ def score_and_verdict(
 
     is_lossy_brickwall = spectral.is_brickwall and not getattr(spectral, "is_studio_filter", False)
 
+    # ── Kiểm tra Hi-Res giả chuyên biệt (Yêu cầu 3) ──────────────────────────
+    is_hires_container = ultrasonic.applicable
+    is_ultrasonic_defect = (
+        is_hires_container
+        and (
+            ultrasonic.fake_hires_upsampled
+            or (not ultrasonic.has_true_ultrasonic_transients)
+            or (ultrasonic.ultrasonic_correlation is not None and ultrasonic.ultrasonic_correlation < 0.15)
+        )
+    )
+    is_fake_hires_case = (
+        is_hires_container
+        and is_ultrasonic_defect
+        and fc is not None
+        and fc < 22_500.0
+    )
+
+    if is_fake_hires_case:
+        sr_khz = int(round(spectral.nyquist_hz * 2 / 1000.0))
+        is_lossy_holes = (anti_spoof.spectral_holes_ratio > 0.05 or anti_spoof.holes_detected)
+        # Trường hợp B (cutoff_freq < 19.5 kHz hoặc có MDCT Holes > 0.05):
+        if fc < 19_500.0 or is_lossy_holes:
+            score -= 68
+            flags.append("FAKE_HIRES_LOSSY")
+            hard_evidences.append("fake_hires_lossy")
+            deductions.append(
+                f"Lossless / Hi-Res Giả: Tệp khai báo tần số lấy mẫu {sr_khz} kHz nhưng phổ tần bị cắt cụt tại {fc/1000:.2f} kHz "
+                f"kèm dấu vết nén lossy, không có dải siêu âm thực (-68)"
+            )
+        # Trường hợp A (cutoff_freq nằm ở vùng 19.5 kHz – 22.05 kHz VÀ MDCT Holes == 0%):
+        else:
+            score -= 52
+            flags.append("FAKE_HIRES_UPSAMPLED")
+            hard_evidences.append("fake_hires_cd")
+            deductions.append(
+                f"Hi-Res Giả: Tệp khai báo tần số lấy mẫu {sr_khz} kHz nhưng phổ tần thực tế dừng ở ~{fc/1000:.1f} kHz, "
+                f"hoàn toàn trống rỗng ở dải siêu âm (>24 kHz) (-52)"
+            )
+
     # ── 1. HARD EVIDENCE EVALUATION (Bằng chứng thép) ─────────────────────────
 
     # A. Brickwall cutoffs & 3-Tier Segmentation
-    if fc is not None and is_lossy_brickwall:
+    if fc is not None and is_lossy_brickwall and not is_fake_hires_case:
         active_ratio = getattr(spectral, "active_cutoff_ratio", None) or 0.0
         std_khz = getattr(spectral, "cutoff_std_khz", None)
         if std_khz is None:
@@ -168,17 +207,24 @@ def score_and_verdict(
 
         # ── PHÂN KHÚC 2: 17.5 kHz < fc < 20.0 kHz (Vùng MP3 192–256k / Vorbis / AAC 192k) ──
         elif fc < 20_000.0:
+            # Yêu cầu 1: Một vết cắt chỉ được coi là Hard Brickwall nhân tạo khi thỏa mãn ĐỒNG THỜI (AND):
+            # active_cutoff_ratio >= 0.30 VÀ cutoff_std_khz < 0.45 kHz (vừa dày đặc vừa phẳng lì).
             is_hard_brickwall_mid = (
-                slope_val <= -20.0
-                or (active_ratio >= 0.20 and std_khz < 0.40)
+                (active_ratio >= 0.30 and std_khz < 0.45)
                 or (anti_spoof.spectral_holes_ratio > 0.05)
                 or anti_spoof.holes_detected
             )
             is_acoustic_undulation_mid = (
                 not is_hard_brickwall_mid
-                and slope_val > -18.0
-                and std_khz >= 0.55
+                and (std_khz >= 0.45 or slope_val > -18.0)
                 and is_strict_clean_mdct
+            )
+
+            # Yêu cầu 2: Đồng bộ tên gọi nguồn nén ở vùng 19.3 kHz <= cutoff_freq < 20.5 kHz
+            encoder_label = (
+                "đặc trưng nguồn nén cận chuẩn (MP3 320kbps / AAC 256k / Opus) hoặc giới hạn 44.1kHz"
+                if fc >= 19_300.0
+                else "đặc trưng nén Lossy 192–256kbps"
             )
 
             if is_hard_brickwall_mid:
@@ -188,22 +234,22 @@ def score_and_verdict(
                 deductions.append(
                     f"Vết cắt dốc đứng (Hard Brickwall) tại {fc/1000:.2f} kHz "
                     f"(chạm trần {active_ratio:.1%}, tản mác {std_khz:.2f} kHz): "
-                    f"đặc trưng nén Lossy 192–256kbps (-55)"
+                    f"{encoder_label} (-55)"
                 )
             elif is_acoustic_undulation_mid:
-                score -= 15
+                score -= 16
                 flags.append("SUSPICIOUS_ACOUSTIC_LIMIT")
                 soft_anomalies.append("acoustic_sparse_limit")
                 deductions.append(
                     f"Giới hạn âm học tự nhiên tại {fc/1000:.1f} kHz "
-                    f"(đỉnh phổ nhấp nhô tự nhiên std={std_khz:.2f} kHz, sạch lỗ nén MDCT) (-15)"
+                    f"(đỉnh phổ nhấp nhô tự nhiên std={std_khz:.2f} kHz, sạch lỗ nén MDCT) (-16)"
                 )
             else:
                 score -= 50
                 flags.append("SUSPICIOUS_TRANSCODE")
                 hard_evidences.append("brickwall_mid")
                 deductions.append(
-                    f"Brickwall cutoff at {fc/1000:.2f} kHz: likely MP3 192-256k/AAC transcode (-50)"
+                    f"Brickwall cutoff tại {fc/1000:.2f} kHz: {encoder_label} (-50)"
                 )
 
         # ── PHÂN KHÚC 3: fc >= 20.0 kHz ──
@@ -213,8 +259,13 @@ def score_and_verdict(
             score -= SCORE_DEDUCTIONS.get("brickwall_high", 50)
             flags.append("SUSPICIOUS_TRANSCODE")
             hard_evidences.append("brickwall_high")
+            encoder_label = (
+                "đặc trưng nguồn nén cận chuẩn (MP3 320kbps / AAC 256k / Opus) hoặc giới hạn 44.1kHz"
+                if fc < 20_500.0
+                else "likely MP3 320k/Opus"
+            )
             deductions.append(
-                f"High-frequency cutoff at {fc/1000:.2f} kHz: likely MP3 320k/Opus (-{SCORE_DEDUCTIONS.get('brickwall_high', 50)})"
+                f"High-frequency cutoff at {fc/1000:.2f} kHz: {encoder_label} (-{SCORE_DEDUCTIONS.get('brickwall_high', 50)})"
             )
 
     # B. Fake noise injection & stealth noise layer
@@ -251,8 +302,8 @@ def score_and_verdict(
             f"Suspicious bit scaling: bottom bits lack entropy for genuine {bit_depth.declared}-bit master (-{SCORE_DEDUCTIONS['bit_padded']})"
         )
 
-    # D. Fake Hi-Res upsampling
-    if ultrasonic.applicable and ultrasonic.fake_hires_upsampled:
+    # D. Fake Hi-Res upsampling (áp dụng khi chưa xử lý chuyên biệt ở is_fake_hires_case)
+    if not is_fake_hires_case and ultrasonic.applicable and ultrasonic.fake_hires_upsampled:
         score -= SCORE_DEDUCTIONS["fake_hires"]
         flags.append("UPSAMPLED_HIRES")
         hard_evidences.append("fake_hires")
@@ -341,6 +392,8 @@ def score_and_verdict(
         "bit_padded",
         "lossy_in_24bit",
         "fake_hires",
+        "fake_hires_cd",
+        "fake_hires_lossy",
         "ai_artifacts",
     }
     has_severe = any(e in severe_evidences for e in hard_evidences)
@@ -361,7 +414,15 @@ def score_and_verdict(
         and (not bit_depth.is_padded and not bit_depth.suspicious_scaling)
     )
 
-    if "FAKE_UPSCALED_128K" in flags or "brickwall_low_hard" in hard_evidences:
+    if "FAKE_HIRES_LOSSY" in flags or "fake_hires_lossy" in hard_evidences:
+        status = "FAKE_HIRES_LOSSY"
+        label = "Lossless / Hi-Res Giả (Upsampled từ nguồn nén Lossy)"
+        confidence = "HIGH"
+    elif "FAKE_HIRES_UPSAMPLED" in flags or "fake_hires_cd" in hard_evidences:
+        status = "FAKE_HIRES_UPSAMPLED"
+        label = "Hi-Res Giả (Upsampled từ nguồn 44.1kHz / CD hoặc Lossy 320k)"
+        confidence = "HIGH"
+    elif "FAKE_UPSCALED_128K" in flags or "brickwall_low_hard" in hard_evidences:
         status = "FAKE_UPSCALED"
         label = f"Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC, cutoff {fc/1000:.2f} kHz)" if fc else "Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC)"
         confidence = "HIGH"
@@ -433,6 +494,10 @@ def _make_label(
         return f"Nghi vấn giới hạn băng thông ({fc/1000:.1f} kHz) / Bản phối mộc ít âm cao" if fc else "Nghi vấn giới hạn băng thông / Bản phối mộc ít âm cao"
     if status == "SUSPICIOUS_ACOUSTIC_LIMIT":
         return "Giới hạn âm học tự nhiên (Bản phối ít nhạc cụ dải cao)"
+    if status == "FAKE_HIRES_UPSAMPLED":
+        return "Hi-Res Giả (Upsampled từ nguồn 44.1kHz / CD hoặc Lossy 320k)"
+    if status == "FAKE_HIRES_LOSSY":
+        return "Lossless / Hi-Res Giả (Upsampled từ nguồn nén Lossy)"
     if status == "FAKE_UPSCALED_128K":
         return f"Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC, cutoff {fc/1000:.2f} kHz)" if fc else "Fake Lossless (Transcoded từ nguồn Lossy ~128kbps / YouTube AAC)"
     if status == "FAKE_UPSCALED":
@@ -448,6 +513,8 @@ def _make_label(
     if status == "FAKE_BIT_DEPTH":
         return "Fake Bit-Depth (Inflated 24-bit container from lossy or 16-bit source)"
     if status == "SUSPICIOUS_TRANSCODE":
+        if fc and 19_300.0 <= fc < 20_500.0:
+            return f"Nghi vấn nguồn nén cận chuẩn (MP3 320k / Opus / AAC 256k, cutoff {fc/1000:.2f} kHz)"
         return f"Suspicious (Possible MP3 320k / Opus transcode, cutoff {fc/1000:.2f} kHz)" if fc else "Suspicious Transcode"
     if status == "UPSAMPLED_HIRES":
         return "Upsampled Hi-Res (Standard Redbook audio in Hi-Res container)"
