@@ -447,4 +447,61 @@ class TestStudioAntiAliasingFilter:
         assert spectral.is_studio_filter is True
         assert spectral.is_brickwall is False
 
+    def test_youtube_128k_upscaled_to_24bit_flac_scores_red_fake(self):
+        """
+        Verify that a YouTube 128k AAC/Opus audio track cut at 16.31 kHz with -28.2 dB/kHz slope
+        upscaled to 24-bit FLAC (like Flower: Lower one's eyes) is strictly marked RED FAKE_UPSCALED (score <= 35)
+        with HIGH confidence, despite 24 active bits and 0% MDCT holes.
+        """
+        from schemas import (
+            BitDepthSchema,
+            SpectralCutoffSchema,
+            AntiSpoofSchema,
+            UltrasonicSchema,
+        )
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24,
+            effective=24,
+            wasted_bits=0,
+            is_padded=False,
+            suspicious_scaling=False,
+            detail="Đủ 24-bit dữ liệu (Lưu ý: Nếu nguồn gốc là lossy, các bit thấp có thể do quá trình giải mã tạo ra)",
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=22050.0,
+            detected_cutoff_hz=16310.0,
+            rolloff_slope_db_per_khz=-28.2,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 ~128 kbps / YouTube AAC / Ogg Vorbis",
+            detail="Brickwall cutoff detected at 16.31 kHz",
+            hf_energy_14_20_db=-83.9,
+            active_cutoff_ratio=0.75,
+            cutoff_std_khz=0.12,
+            pre_cutoff_energy_db=-83.9,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.0000,
+            holes_detected=False,
+            hf_envelope_correlation=0.45,
+            fake_noise_injected=False,
+            detail="Clean MDCT",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=False,
+            has_true_ultrasonic_transients=None,
+            fake_hires_upsampled=False,
+            ultrasonic_correlation=None,
+            detail="N/A",
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        assert verdict.score <= 35, f"Expected score <= 35 (RED), got {verdict.score}"
+        assert verdict.status == "FAKE_UPSCALED", f"Expected FAKE_UPSCALED, got {verdict.status}"
+        assert verdict.confidence == "HIGH", f"Expected HIGH confidence, got {verdict.confidence}"
+        assert "YouTube AAC" in verdict.label
+
+
 

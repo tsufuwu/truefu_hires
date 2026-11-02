@@ -122,16 +122,20 @@ def score_and_verdict(
         # ── PHÂN KHÚC 1: fc <= 17.5 kHz (Vùng nguy hiểm của MP3 128k / YouTube AAC 128k) ──
         if fc <= 17_500.0:
             # Trường hợp 1A: Cắt cụt nhân tạo (Hard Brickwall)
+            # Dấu hiệu codec lossy: trần phẳng lì (std_khz < 0.40) HOẶC chạm trần cao (active_ratio >= 0.20)
+            # HOẶC cắt rất dốc (slope_val <= -25.0) mà trần không dao động tự nhiên theo nốt nhạc (std_khz < 0.60).
             is_hard_brickwall_128k = (
-                active_ratio >= 0.25
+                active_ratio >= 0.20
                 or std_khz < 0.40
-                or (slope_val <= -25.0 and pre_energy > -60.0)
+                or (slope_val <= -25.0 and std_khz < 0.60)
             )
 
-            # Trường hợp 1B: Nhạc mộc thưa thực sự (rất ít âm cao, năng lượng dải 10-16k cực thấp)
+            # Trường hợp 1B: Nhạc mộc thưa thực sự (rất ít âm cao, đỉnh phổ dao động tự nhiên theo nốt nhạc std >= 0.75 kHz)
             is_sparse_acoustic_128k = (
-                active_ratio < 0.15
-                and (pre_energy < -75.0 or hf_energy_14_20 < -75.0)
+                not is_hard_brickwall_128k
+                and active_ratio < 0.15
+                and std_khz >= 0.75
+                and pre_energy < -75.0
                 and is_strict_clean_mdct
             )
 
@@ -143,7 +147,7 @@ def score_and_verdict(
                 hard_evidences.append("brickwall_low_hard")
                 deductions.append(
                     f"Cắt cụt nhân tạo (Hard Brickwall) tại {fc/1000:.2f} kHz "
-                    f"(mật độ chạm trần {active_ratio:.1%}, độ tản mác đỉnh {std_khz:.2f} kHz, dốc {slope_val:.1f} dB/kHz): "
+                    f"(mật độ chạm trần {active_ratio:.1%}, độ tản mác đỉnh {std_khz:.2f} kHz, dốc {abs(slope_val):.1f} dB/kHz): "
                     f"đặc trưng nguồn Lossy ~128kbps / YouTube AAC (-68)"
                 )
             elif is_sparse_acoustic_128k:
@@ -165,12 +169,15 @@ def score_and_verdict(
         # ── PHÂN KHÚC 2: 17.5 kHz < fc < 20.0 kHz (Vùng MP3 192–256k / Vorbis / AAC 192k) ──
         elif fc < 20_000.0:
             is_hard_brickwall_mid = (
-                (active_ratio >= 0.30 and std_khz < 0.35)
+                slope_val <= -20.0
+                or (active_ratio >= 0.20 and std_khz < 0.40)
                 or (anti_spoof.spectral_holes_ratio > 0.05)
                 or anti_spoof.holes_detected
             )
             is_acoustic_undulation_mid = (
-                std_khz >= 0.50
+                not is_hard_brickwall_mid
+                and slope_val > -18.0
+                and std_khz >= 0.55
                 and is_strict_clean_mdct
             )
 

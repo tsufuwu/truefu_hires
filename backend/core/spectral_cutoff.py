@@ -377,17 +377,21 @@ def analyze_spectral_cutoff(
 
         pre_e = magnitude_db[idx_pre, audible_frames]
         post_e = magnitude_db[idx_post, audible_frames]
+
+        stopband_floor = float(np.percentile(post_e, 50))
         hits = (
-            ((pre_e > -65.0) & (post_e < -90.0))
-            | ((pre_e > -75.0) & ((pre_e - post_e) >= 22.0))
+            ((pre_e > -70.0) & (post_e < -88.0))
+            | ((pre_e > -88.0) & ((pre_e - post_e) >= 15.0))
+            | ((pre_e > (stopband_floor + 15.0)) & (post_e < -92.0))
         )
         active_cutoff_ratio = float(np.mean(hits)) if audible_frames.sum() > 0 else 0.0
 
         # Chỉ số 2: Độ lệch chuẩn của đỉnh tần số theo thời gian (cutoff_std_khz)
+        detect_thresh = max(-92.0, min(-78.0, stopband_floor + 10.0))
         fmax_list = []
         audible_indices = np.where(audible_frames)[0]
         for t_idx in audible_indices:
-            bins_above = np.where(magnitude_db[:, t_idx] > -82.0)[0]
+            bins_above = np.where(magnitude_db[:, t_idx] > detect_thresh)[0]
             if len(bins_above) > 0:
                 f_max_khz = float(freqs[bins_above[-1]] / 1000.0)
                 if f_max_khz >= 8.0:
