@@ -44,6 +44,7 @@ class SpectralCutoffSchema(BaseModel):
     is_studio_filter: bool = False
     suspected_source_encoder: Optional[str] = None
     detail: str
+    hf_energy_14_20_db: Optional[float] = None
 
 
 class AntiSpoofSchema(BaseModel):

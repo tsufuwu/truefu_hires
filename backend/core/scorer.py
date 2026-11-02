@@ -94,7 +94,29 @@ def score_and_verdict(
 
     # A. Brickwall cutoffs
     if fc is not None and is_lossy_brickwall:
-        if fc <= 16_800:
+        # ── Điều kiện ràng buộc (Gatekeeping) giữa Brickwall và MDCT: ────────
+        # Nếu Cutoff < 19.5 kHz nhưng Tỷ lệ lỗ nén MDCT == 0.0% VÀ năng lượng tổng thể dải 14–20 kHz rất thấp (nhạc thưa/acoustic):
+        # Không được gắn nhãn "Lossless Giả (Độ tin cậy cao)". Hãy chuyển sang cảnh báo màu vàng.
+        hf_energy_14_20 = getattr(spectral, "hf_energy_14_20_db", None)
+        if hf_energy_14_20 is None:
+            hf_energy_14_20 = -100.0
+
+        is_acoustic_sparse_gate = (
+            fc < 19_500.0
+            and anti_spoof.spectral_holes_ratio <= 0.005
+            and not anti_spoof.holes_detected
+            and hf_energy_14_20 < -68.0
+            and (spectral.rolloff_slope_db_per_khz is None or abs(spectral.rolloff_slope_db_per_khz) < 50.0)
+        )
+
+        if is_acoustic_sparse_gate:
+            score -= 15
+            flags.append("SUSPICIOUS_ACOUSTIC_LIMIT")
+            soft_anomalies.append("acoustic_sparse_limit")
+            deductions.append(
+                f"Giới hạn âm học tự nhiên (Bản thu ít nhạc cụ dải cao) hoặc nghi vấn cắt tần tại {fc/1000:.1f} kHz (-15)"
+            )
+        elif fc <= 16_800:
             score -= SCORE_DEDUCTIONS["brickwall_low"]
             flags.append("FAKE_UPSCALED")
             hard_evidences.append("brickwall_low")
@@ -259,8 +281,10 @@ def score_and_verdict(
         label = "Authentic Lossless"
         confidence = "HIGH" if score >= 90 else "MEDIUM"
     elif score >= VERDICT_SUSPICIOUS:
-        # 60–84: Suspicious / Anomaly
-        if "SUSPICIOUS_TRANSCODE" in flags:
+        # 60–84: Suspicious / Anomaly (Màu vàng)
+        if "SUSPICIOUS_ACOUSTIC_LIMIT" in flags:
+            status = "SUSPICIOUS_ACOUSTIC_LIMIT"
+        elif "SUSPICIOUS_TRANSCODE" in flags:
             status = "SUSPICIOUS_TRANSCODE"
         elif "SUSPICIOUS_ANOMALY" in flags or "natural_decay_knee" in soft_anomalies:
             status = "SUSPICIOUS_ANOMALY"
@@ -307,6 +331,8 @@ def _make_label(
     fc: Optional[float],
     anti_spoof: AntiSpoofSchema,
 ) -> str:
+    if status == "SUSPICIOUS_ACOUSTIC_LIMIT":
+        return "Giới hạn âm học tự nhiên (Bản thu ít nhạc cụ dải cao) hoặc nghi vấn cắt tần — Cần kiểm tra đỉnh phổ cục bộ"
     if status == "SUSPICIOUS_ANOMALY":
         return "Suspicious / Mastering Anomaly (Unusual Roll-Off Characteristic)"
     if status == "FAKE_UPSCALED":

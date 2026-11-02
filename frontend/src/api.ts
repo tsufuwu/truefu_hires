@@ -38,6 +38,7 @@ export interface SpectralCutoffData {
   is_studio_filter?: boolean;
   suspected_source_encoder: string | null;
   detail: string;
+  hf_energy_14_20_db?: number | null;
 }
 
 export interface AntiSpoofData {

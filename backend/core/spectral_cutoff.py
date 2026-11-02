@@ -69,11 +69,12 @@ def compute_stft_profile(
     sample_rate: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Compute the STFT 95th-percentile spectral profile.
+    Compute the STFT spectral profile based on Top-N% High-Energy Frames (10–20 kHz).
+    This prevents quiet passages from drowning out rare moments of high-frequency instruments.
 
     Returns:
         freqs  : frequency bins in Hz
-        profile: 95th-percentile dBFS values per bin
+        profile: dBFS values per bin across top-energy frames
     """
     if sample_rate <= 48_000:
         nperseg  = STFT_NPERSEG_LOW
@@ -93,7 +94,24 @@ def compute_stft_profile(
     )
 
     magnitude_db = 20.0 * np.log10(np.maximum(np.abs(Zxx), 1e-7))
-    profile      = np.percentile(magnitude_db, SPECTRAL_PERCENTILE, axis=1)
+    nyquist = sample_rate / 2.0
+
+    # Top-N% High-Energy Frames selection on 10-20 kHz band:
+    hf_band = (freqs >= 10_000.0) & (freqs <= min(20_000.0, nyquist))
+    if hf_band.sum() > 0:
+        frame_hf_energy = np.percentile(magnitude_db[hf_band, :], 85, axis=0)
+    else:
+        frame_hf_energy = np.mean(magnitude_db, axis=0)
+
+    total_frames = magnitude_db.shape[1]
+    # Lấy top 10% khung thời gian có năng lượng dải 10-20 kHz mạnh nhất
+    k_frames = max(10, int(np.ceil(total_frames * 0.10)))
+    k_frames = min(k_frames, total_frames)
+
+    top_indices = np.argsort(frame_hf_energy)[-k_frames:]
+    top_frames_mag = magnitude_db[:, top_indices]
+
+    profile = np.percentile(top_frames_mag, 90, axis=1)
 
     return freqs, profile
 
@@ -192,57 +210,127 @@ def analyze_spectral_cutoff(
     sample_rate: int,
 ) -> Tuple[SpectralCutoffSchema, np.ndarray, np.ndarray]:
     """
-    Full cutoff detection.
+    Full cutoff detection using Top-N% High-Energy Frames and Golden Rule verification.
 
     Returns:
         schema   : SpectralCutoffSchema
         freqs    : frequency bins (Hz) for visualisation
-        profile  : 95th-percentile smoothed spectral profile (dBFS)
+        profile  : smoothed spectral profile (dBFS)
     """
     nyquist = sample_rate / 2.0
 
-    active = _select_high_rms_frames(float32_mono, sample_rate)
-    freqs, profile = compute_stft_profile(active, sample_rate)
+    if sample_rate <= 48_000:
+        nperseg  = STFT_NPERSEG_LOW
+        noverlap = STFT_NOVERLAP_LOW
+    else:
+        nperseg  = STFT_NPERSEG_HIGH
+        noverlap = STFT_NOVERLAP_HIGH
+
+    nperseg  = min(nperseg, len(float32_mono))
+    noverlap = min(noverlap, nperseg - 1)
+
+    freqs, _, Zxx = signal.stft(
+        float32_mono, fs=sample_rate,
+        window="hann",
+        nperseg=nperseg,
+        noverlap=noverlap,
+    )
+    magnitude_db = 20.0 * np.log10(np.maximum(np.abs(Zxx), 1e-7))
+
+    # ── 1. Top-N% High-Energy Frames (10–20 kHz) ─────────────────────────────
+    # Thay vì cộng trung bình toàn bộ bài làm đoạn im lặng dìm chết âm sắc cao,
+    # chỉ chọn top 10% các khung thời gian có năng lượng dải 10–20 kHz mạnh nhất để tìm cutoff.
+    hf_band = (freqs >= 10_000.0) & (freqs <= min(20_000.0, nyquist))
+    if hf_band.sum() > 0:
+        frame_hf_energy = np.percentile(magnitude_db[hf_band, :], 85, axis=0)
+    else:
+        frame_hf_energy = np.mean(magnitude_db, axis=0)
+
+    total_frames = magnitude_db.shape[1]
+    k_frames = max(10, int(np.ceil(total_frames * 0.10)))
+    k_frames = min(k_frames, total_frames)
+
+    top_indices = np.argsort(frame_hf_energy)[-k_frames:]
+    top_frames_mag = magnitude_db[:, top_indices]
+    profile = np.percentile(top_frames_mag, 90, axis=1)
 
     smoothed = savgol_filter(profile, window_length=SAVGOL_WINDOW, polyorder=SAVGOL_POLY)
     cutoff_hz, slope = _find_brickwall_cutoff(freqs, smoothed, nyquist)
 
-    # ── Check for Studio Anti-Aliasing Filter near Nyquist ────────────────────
-    is_studio_filter = False
-    if cutoff_hz is not None:
-        # Check if cutoff is within the studio anti-aliasing / reconstruction filter range
-        # (21.0 kHz - 22.05 kHz for 44.1 kHz Redbook audio, or >= 0.95 * Nyquist)
-        is_studio_range = (
-            (STUDIO_FILTER_MIN_HZ <= cutoff_hz <= STUDIO_FILTER_MAX_HZ)
-            if sample_rate <= 44_100
-            else (cutoff_hz >= nyquist * 0.95)
-        )
-        if is_studio_range:
-            is_studio_filter = True
+    # ── 2. Quy tắc vàng (Golden Rule): ───────────────────────────────────────
+    # Trong một file âm thanh, chỉ cần tồn tại dù chỉ 1–2 giây có tín hiệu âm nhạc tự nhiên
+    # (không phải nhiễu trắng/glitch) vươn lên tới 20–21 kHz, thì trần tần số thực sự của file
+    # đó là 20–21 kHz, bất chấp 99% thời gian còn lại nó chỉ nằm ở 15–18 kHz.
+    ultra_mask = (freqs >= 19_800.0) & (freqs <= min(21_800.0, nyquist))
+    mid_mask = (freqs >= 3_000.0) & (freqs <= 8_000.0)
+    has_golden_rule_reach = False
+    active_ultra_seconds = 0.0
 
-    # A Studio Anti-Aliasing Filter is a standard converter filter, NOT a lossy brickwall defect
-    is_brickwall = (cutoff_hz is not None) and (not is_studio_filter)
-    encoder = _map_encoder(cutoff_hz)
-    if is_studio_filter:
+    if ultra_mask.sum() > 0 and mid_mask.sum() > 0:
+        ultra_energy_t = np.percentile(magnitude_db[ultra_mask, :], 85, axis=0)
+        mid_energy_t = np.percentile(magnitude_db[mid_mask, :], 85, axis=0)
+
+        # Frame âm nhạc tự nhiên vươn tới 20-21 kHz: có năng lượng dải siêu cao (> -75 dBFS)
+        # và đồng thời có âm lượng dải trung (> -52 dBFS) xác nhận là âm sắc nhạc cụ thực tế.
+        musical_frames = (ultra_energy_t > -75.0) & (mid_energy_t > -52.0)
+        active_count = int(np.sum(musical_frames))
+        frame_dt = (nperseg - noverlap) / sample_rate
+        active_ultra_seconds = active_count * frame_dt
+
+        # Chỉ cần >= 0.5 - 1.0 giây có âm thanh thực sự vươn tới 20-21 kHz:
+        if active_ultra_seconds >= 0.5:
+            has_golden_rule_reach = True
+
+    if has_golden_rule_reach and (cutoff_hz is None or cutoff_hz < 20_500.0):
+        # Trần tần số thực tế đạt 20–21 kHz! Bác bỏ bất kỳ cutoff thấp nào ở các đoạn êm dịu.
+        cutoff_hz = None
+        slope = None
+        is_brickwall = False
+        is_studio_filter = True
         encoder = "Studio Anti-Aliasing Filter (Redbook CD)"
-
-    # ── detail string ────────────────────────────────────────────────────────
-    if is_studio_filter and cutoff_hz is not None:
-        slope_val = slope if slope is not None else 0.0
         detail = (
-            f"Studio anti-aliasing filter detected at {cutoff_hz/1000:.2f} kHz "
-            f"(slope {slope_val:.1f} dB/kHz) near Nyquist boundary ({nyquist/1000:.2f} kHz). "
-            f"Preserves genuine Redbook CD audio bandwidth."
-        )
-    elif is_brickwall and cutoff_hz is not None:
-        slope_val = slope if slope is not None else 0.0
-        detail = (
-            f"Brickwall cutoff detected at {cutoff_hz/1000:.2f} kHz "
-            f"(slope {slope_val:.1f} dB/kHz). "
-            f"Suspected source: {encoder or 'unknown encoder'}."
+            f"Quy tắc vàng: Tín hiệu âm nhạc tự nhiên vươn tới dải 20–21 kHz tại các đoạn cao trào "
+            f"({active_ultra_seconds:.1f}s hoạt động). "
+            "Trần tần số thực tế của bản thu đạt chuẩn phòng thu (>20 kHz), không bị cắt gọt lossy."
         )
     else:
-        detail = f"No brickwall cutoff found up to Nyquist ({nyquist/1000:.1f} kHz). Full-spectrum audio."
+        # Kiểm tra Bộ lọc phòng thu thông thường gần Nyquist
+        is_studio_filter = False
+        if cutoff_hz is not None:
+            is_studio_range = (
+                (STUDIO_FILTER_MIN_HZ <= cutoff_hz <= STUDIO_FILTER_MAX_HZ)
+                if sample_rate <= 44_100
+                else (cutoff_hz >= nyquist * 0.95)
+            )
+            if is_studio_range:
+                is_studio_filter = True
+
+        is_brickwall = (cutoff_hz is not None) and (not is_studio_filter)
+        encoder = _map_encoder(cutoff_hz)
+        if is_studio_filter:
+            encoder = "Studio Anti-Aliasing Filter (Redbook CD)"
+
+        # detail string
+        if is_studio_filter and cutoff_hz is not None:
+            slope_val = slope if slope is not None else 0.0
+            detail = (
+                f"Studio anti-aliasing filter detected at {cutoff_hz/1000:.2f} kHz "
+                f"(slope {slope_val:.1f} dB/kHz) near Nyquist boundary ({nyquist/1000:.2f} kHz). "
+                f"Preserves genuine Redbook CD audio bandwidth."
+            )
+        elif is_brickwall and cutoff_hz is not None:
+            slope_val = slope if slope is not None else 0.0
+            detail = (
+                f"Brickwall cutoff detected at {cutoff_hz/1000:.2f} kHz "
+                f"(slope {slope_val:.1f} dB/kHz). "
+                f"Suspected source: {encoder or 'unknown encoder'}."
+            )
+        else:
+            detail = f"No brickwall cutoff found up to Nyquist ({nyquist/1000:.1f} kHz). Full-spectrum audio."
+
+    # Đo năng lượng tổng thể dải 14–20 kHz để phục vụ Gatekeeping với MDCT:
+    band_14_20 = (freqs >= 14_000.0) & (freqs <= min(20_000.0, nyquist))
+    hf_energy_14_20 = float(np.mean(smoothed[band_14_20])) if band_14_20.sum() > 0 else -100.0
 
     return (
         SpectralCutoffSchema(
@@ -253,6 +341,7 @@ def analyze_spectral_cutoff(
             is_studio_filter=is_studio_filter,
             suspected_source_encoder=encoder,
             detail=detail,
+            hf_energy_14_20_db=round(hf_energy_14_20, 2),
         ),
         freqs,
         smoothed,
