@@ -170,20 +170,15 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
             if sample_rate <= 44_100
             else (fc >= spectral_result.nyquist_hz * 0.95)
         )
-        # 2. Studio Master Filter: fc >= 20.5 kHz VÀ Tỷ lệ lỗ nén MDCT = Thấp (Đạt chuẩn)
-        is_studio_master = (
-            fc >= 20_500.0
-            and not anti_spoof_result.holes_detected
-            and anti_spoof_result.spectral_holes_ratio < 0.15
-        )
-        # 3. Studio Digital Master Filter (20.0 - 20.5 kHz with clean MDCT)
-        is_digital_master = (
+        # 2. Studio Master / 44.1kHz Pipeline Filter (Rule 3):
+        # fc >= 20.0 kHz VÀ Tỷ lệ lỗ nén MDCT < 0.10 VÀ bit_depth đạt chuẩn
+        is_studio_pipeline_filter = (
             fc >= 20_000.0
-            and anti_spoof_result.spectral_holes_ratio < 0.04
             and not anti_spoof_result.holes_detected
+            and anti_spoof_result.spectral_holes_ratio < 0.10
         )
 
-        if (is_studio_nyquist or is_studio_master or is_digital_master) and is_authentic_bits:
+        if (is_studio_nyquist or is_studio_pipeline_filter) and is_authentic_bits:
             spectral_result.is_studio_filter = True
             spectral_result.is_brickwall = False
             if is_studio_nyquist:
@@ -193,20 +188,12 @@ def _process_audio_file(file_path: Path, original_name: str) -> AnalysisResponse
                     f"(slope {slope_val:.1f} dB/kHz) near Nyquist boundary. "
                     "Preserves genuine Redbook CD audio bandwidth."
                 )
-            elif is_studio_master:
-                spectral_result.suspected_source_encoder = "Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter)"
-                spectral_result.detail = (
-                    f"Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter) phát hiện tại {fc/1000:.2f} kHz "
-                    f"(độ dốc {slope_val:.1f} dB/kHz). Tỷ lệ lỗ nén MDCT đạt chuẩn ({anti_spoof_result.spectral_holes_ratio:.1%}). "
-                    "Toàn bộ dải phổ âm thanh nguyên bản phòng thu được bảo toàn."
-                )
             else:
-                spectral_result.suspected_source_encoder = "Studio Digital Master Filter (Mora / Digital Master)"
+                spectral_result.suspected_source_encoder = "Giới hạn tần số từ bản gốc phòng thu (Studio Master / 44.1kHz Pipeline Filter)"
                 spectral_result.detail = (
-                    f"Studio digital master filter detected at {fc/1000:.2f} kHz "
-                    f"(slope {slope_val:.1f} dB/kHz). "
-                    "Standard digital mastering filter for online distribution (Mora / Apple Music / CD). "
-                    "Full 20 kHz original audio bandwidth preserved with clean MDCT."
+                    f"Giới hạn tần số từ bản gốc phòng thu (Studio Master / 44.1kHz Pipeline Filter) phát hiện tại {fc/1000:.2f} kHz "
+                    f"(độ dốc {slope_val:.1f} dB/kHz). Tỷ lệ lỗ nén MDCT đạt chuẩn sạch ({anti_spoof_result.spectral_holes_ratio:.1%}) "
+                    f"và độ sâu bit đạt chuẩn ({bit_depth_result.effective}-bit). Toàn bộ dải phổ âm thanh nguyên bản phòng thu được bảo toàn."
                 )
 
     # Module Độ Sâu Bit: Chỉ được phép kết luận dựa trên dữ liệu bit thực tế (LSB bit-histograms).

@@ -96,22 +96,23 @@ def compute_stft_profile(
     magnitude_db = 20.0 * np.log10(np.maximum(np.abs(Zxx), 1e-7))
     nyquist = sample_rate / 2.0
 
-    # Top-N% High-Energy Frames selection on 10-20 kHz band:
-    hf_band = (freqs >= 10_000.0) & (freqs <= min(20_000.0, nyquist))
+    # Top-N% High-Energy Frames selection on 8-20 kHz band (chống bắt nhầm nhạc acoustic/piano):
+    hf_band = (freqs >= 8_000.0) & (freqs <= min(20_000.0, nyquist))
     if hf_band.sum() > 0:
-        frame_hf_energy = np.percentile(magnitude_db[hf_band, :], 85, axis=0)
+        frame_hf_energy = np.percentile(magnitude_db[hf_band, :], 90, axis=0)
     else:
         frame_hf_energy = np.mean(magnitude_db, axis=0)
 
     total_frames = magnitude_db.shape[1]
-    # Lấy top 10% khung thời gian có năng lượng dải 10-20 kHz mạnh nhất
-    k_frames = max(10, int(np.ceil(total_frames * 0.10)))
+    # Lấy top 5% khung thời gian có năng lượng dải 8-20 kHz mạnh nhất (tối thiểu 20 frames để ổn định mẫu ngắn)
+    k_frames = max(20, int(np.ceil(total_frames * 0.05)))
     k_frames = min(k_frames, total_frames)
 
     top_indices = np.argsort(frame_hf_energy)[-k_frames:]
     top_frames_mag = magnitude_db[:, top_indices]
 
-    profile = np.percentile(top_frames_mag, 90, axis=1)
+    # Max-hold / 95th-percentile theo trục thời gian trên top frames
+    profile = np.percentile(top_frames_mag, 95, axis=1)
 
     return freqs, profile
 
@@ -237,61 +238,80 @@ def analyze_spectral_cutoff(
     )
     magnitude_db = 20.0 * np.log10(np.maximum(np.abs(Zxx), 1e-7))
 
-    # ── 1. Top-N% High-Energy Frames (10–20 kHz) ─────────────────────────────
-    # Thay vì cộng trung bình toàn bộ bài làm đoạn im lặng dìm chết âm sắc cao,
-    # chỉ chọn top 10% các khung thời gian có năng lượng dải 10–20 kHz mạnh nhất để tìm cutoff.
-    hf_band = (freqs >= 10_000.0) & (freqs <= min(20_000.0, nyquist))
+    # ── 1. Top-N% High-Energy Frames (8–20 kHz) ──────────────────────────────
+    # Chuyển sang phương pháp Top High-Energy Frames (Max-Hold / 96th Percentile theo trục thời gian).
+    # Chỉ trích xuất top 5% các frame STFT có tổng năng lượng ở dải trung-cao (8 kHz – 20 kHz) lớn nhất để tìm cutoff.
+    hf_band = (freqs >= 8_000.0) & (freqs <= min(20_000.0, nyquist))
     if hf_band.sum() > 0:
-        frame_hf_energy = np.percentile(magnitude_db[hf_band, :], 85, axis=0)
+        frame_hf_energy = np.percentile(magnitude_db[hf_band, :], 90, axis=0)
     else:
         frame_hf_energy = np.mean(magnitude_db, axis=0)
 
     total_frames = magnitude_db.shape[1]
-    k_frames = max(10, int(np.ceil(total_frames * 0.10)))
+    k_frames = max(20, int(np.ceil(total_frames * 0.05)))
     k_frames = min(k_frames, total_frames)
 
     top_indices = np.argsort(frame_hf_energy)[-k_frames:]
     top_frames_mag = magnitude_db[:, top_indices]
-    profile = np.percentile(top_frames_mag, 90, axis=1)
+    profile = np.percentile(top_frames_mag, 95, axis=1)
 
     smoothed = savgol_filter(profile, window_length=SAVGOL_WINDOW, polyorder=SAVGOL_POLY)
     cutoff_hz, slope = _find_brickwall_cutoff(freqs, smoothed, nyquist)
 
-    # ── 2. Quy tắc vàng (Golden Rule): ───────────────────────────────────────
-    # Trong một file âm thanh, chỉ cần tồn tại dù chỉ 1–2 giây có tín hiệu âm nhạc tự nhiên
-    # (không phải nhiễu trắng/glitch) vươn lên tới 20–21 kHz, thì trần tần số thực sự của file
-    # đó là 20–21 kHz, bất chấp 99% thời gian còn lại nó chỉ nằm ở 15–18 kHz.
-    ultra_mask = (freqs >= 19_800.0) & (freqs <= min(21_800.0, nyquist))
-    mid_mask = (freqs >= 3_000.0) & (freqs <= 8_000.0)
-    has_golden_rule_reach = False
-    active_ultra_seconds = 0.0
+    # ── 2. Quy tắc đỉnh cục bộ (Local Peak Override): ─────────────────────────
+    # Quét qua toàn bộ thời lượng file, nếu tồn tại ít nhất một cụm frame liên tiếp
+    # (kéo dài >= 150ms) có năng lượng âm nhạc hợp lệ (không phải click/glitch ở đầu/cuối file)
+    # vươn lên ngưỡng F_max (20.5 kHz), thì cutoff_freq của toàn file phải được ghi nhận tối thiểu là F_max.
+    frame_dt = (nperseg - noverlap) / sample_rate
+    min_consec_frames = max(2, int(np.ceil(0.150 / frame_dt)))
+    skip_boundary_frames = max(1, int(0.5 / frame_dt))  # Bỏ qua 0.5s đầu và 0.5s cuối file
 
-    if ultra_mask.sum() > 0 and mid_mask.sum() > 0:
-        ultra_energy_t = np.percentile(magnitude_db[ultra_mask, :], 85, axis=0)
-        mid_energy_t = np.percentile(magnitude_db[mid_mask, :], 85, axis=0)
+    ultra_mask = (freqs >= 20_000.0) & (freqs <= min(21_800.0, nyquist))
+    mid_mask = (freqs >= 1_000.0) & (freqs <= 8_000.0)
 
-        # Frame âm nhạc tự nhiên vươn tới 20-21 kHz: có năng lượng dải siêu cao (> -75 dBFS)
-        # và đồng thời có âm lượng dải trung (> -52 dBFS) xác nhận là âm sắc nhạc cụ thực tế.
-        musical_frames = (ultra_energy_t > -75.0) & (mid_energy_t > -52.0)
-        active_count = int(np.sum(musical_frames))
-        frame_dt = (nperseg - noverlap) / sample_rate
-        active_ultra_seconds = active_count * frame_dt
+    has_local_peak_override = False
+    longest_consec_ms = 0.0
 
-        # Chỉ cần >= 0.5 - 1.0 giây có âm thanh thực sự vươn tới 20-21 kHz:
-        if active_ultra_seconds >= 0.5:
-            has_golden_rule_reach = True
+    if (
+        total_frames > (skip_boundary_frames * 2 + min_consec_frames)
+        and ultra_mask.sum() > 0
+        and mid_mask.sum() > 0
+    ):
+        ultra_energy_t = np.percentile(magnitude_db[ultra_mask, :], 80, axis=0)
+        mid_energy_t = np.percentile(magnitude_db[mid_mask, :], 80, axis=0)
 
-    if has_golden_rule_reach and (cutoff_hz is None or cutoff_hz < 20_500.0):
-        # Trần tần số thực tế đạt 20–21 kHz! Bác bỏ bất kỳ cutoff thấp nào ở các đoạn êm dịu.
-        cutoff_hz = None
+        # Năng lượng dải trung-cao (> -58 dBFS) xác nhận âm nhạc thực tế,
+        # dải siêu cao (> -78 dBFS) xác nhận họa âm vươn tới 20-21.5 kHz
+        is_musical_ultra = (ultra_energy_t > -78.0) & (mid_energy_t > -58.0)
+
+        # Chỉ quét trong khoảng an toàn (bỏ qua mép đầu/cuối)
+        valid_zone = is_musical_ultra[skip_boundary_frames : total_frames - skip_boundary_frames]
+
+        current_run = 0
+        max_run = 0
+        for is_active in valid_zone:
+            if is_active:
+                current_run += 1
+                if current_run > max_run:
+                    max_run = current_run
+            else:
+                current_run = 0
+
+        longest_consec_ms = max_run * frame_dt * 1000.0
+        if max_run >= min_consec_frames:
+            has_local_peak_override = True
+
+    if has_local_peak_override and (cutoff_hz is None or cutoff_hz < 20_500.0):
+        # Local peak override: Trần tần số thực tế đạt >= 20.5 kHz
+        cutoff_hz = 20_500.0
         slope = None
         is_brickwall = False
         is_studio_filter = True
         encoder = "Studio Anti-Aliasing Filter (Redbook CD)"
         detail = (
-            f"Quy tắc vàng: Tín hiệu âm nhạc tự nhiên vươn tới dải 20–21 kHz tại các đoạn cao trào "
-            f"({active_ultra_seconds:.1f}s hoạt động). "
-            "Trần tần số thực tế của bản thu đạt chuẩn phòng thu (>20 kHz), không bị cắt gọt lossy."
+            f"Quy tắc đỉnh cục bộ (Local Peak Override): Phát hiện cụm frame liên tiếp kéo dài "
+            f"{longest_consec_ms:.0f}ms (>=150ms) có năng lượng âm nhạc hợp lệ vươn tới dải 20.5 kHz. "
+            "Trần tần số thực tế của bản thu đạt chuẩn phòng thu (>=20.5 kHz), không bị cắt gọt lossy."
         )
     else:
         # Kiểm tra Bộ lọc phòng thu thông thường gần Nyquist

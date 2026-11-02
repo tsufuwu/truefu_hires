@@ -154,20 +154,53 @@ def analyze_ai_artifacts(
         else:
             comb_ripple = 0.0
 
-    # ── 3. Cross-Validation with Acoustic Transients & MDCT Cleanliness ──────
-    # Distorted electric guitars, synths, and heavy drums naturally have phase dispersion,
-    # but their transients are tightly phase-locked with the mid-band rhythm section.
+    # ── 3. Low-Mid Comb Ripple & Phase Boundary Collapse (Chống báo giả Synthesizer) ──
+    # Nhạc cụ điện tử (Synthesizer, Square/Sawtooth, Flanger, Chiptune) có sóng răng lược
+    # đồng nhất từ dải trầm (2–8 kHz) lên dải cao. Trong khi đó, mô hình AI (AudioSR, Vocoder)
+    # chỉ có comb ripple ở dải vẽ bù (>10–16 kHz) kết hợp với pha sụp đổ đột ngột tại ranh giới 12k/16k.
+    lm_mask = (freqs >= 2_000.0) & (freqs <= 8_000.0)
+    is_uniform_synth_comb = False
+    if lm_mask.sum() >= 20:
+        lm_profile = np.percentile(mag_db[lm_mask, :], 80, axis=1)
+        win_lm = min(31, len(lm_profile) if len(lm_profile) % 2 != 0 else len(lm_profile) - 1)
+        if win_lm >= 7:
+            from scipy.signal import savgol_filter
+            lm_smooth = savgol_filter(lm_profile, window_length=win_lm, polyorder=2)
+            lm_osc = lm_profile - lm_smooth
+            lm_comb_ripple = float(np.percentile(lm_osc, 98) - np.percentile(lm_osc, 2))
+            # Nếu dải trầm-trung cũng có cấu trúc răng lược mạnh tương tự dải cao
+            if lm_comb_ripple >= 4.0 and (comb_ripple - lm_comb_ripple) < 5.0:
+                is_uniform_synth_comb = True
+
+    # Kiểm tra sự sụp đổ pha tại ranh giới mô hình AI (12 kHz hoặc 16 kHz)
+    has_boundary_phase_collapse = False
+    mid_phase_mask = (freqs >= 6_000.0) & (freqs <= 11_500.0)
+    if mid_phase_mask.sum() >= 8 and phases.shape[1] >= 4:
+        mid_zxx = Zxx[mid_phase_mask, :]
+        mid_phases = np.angle(mid_zxx)
+        m_d1 = np.diff(mid_phases, axis=1)
+        m_d2 = np.diff(np.angle(np.exp(1j * m_d1)), axis=1)
+        m_R = np.abs(np.mean(np.exp(1j * np.angle(np.exp(1j * m_d2)))))
+        mid_jitter = float(1.0 - m_R)
+        # Sụp đổ pha: Jitter dải cao nhảy vọt so với dải trung (tăng >= 0.35)
+        if (phase_jitter - mid_jitter) >= 0.30 and phase_jitter > 0.90:
+            has_boundary_phase_collapse = True
+
+    # ── 4. Cross-Validation with Acoustic Transients & MDCT Cleanliness ──────
     transient_sync = bool(phase_coherence and phase_coherence.transient_concurrence_ratio >= 0.35)
     clean_mdct = bool(anti_spoof and anti_spoof.spectral_holes_ratio < 0.04 and not anti_spoof.holes_detected)
     is_genuine_acoustic = transient_sync and clean_mdct
 
-    # Decision criteria for AI neural vocoder artifacts:
-    # Requires genuine comb repetition peaks AND high ripple amplitude,
-    # and must NOT be an authentic acoustic track with synchronized rhythm transients.
+    # Chỉ đánh lỗi AI / Neural Vocoder khi phát hiện đồng thời:
+    # Comb Ripple cao ở dải trên 10 kHz KẾT HỢP VỚI sự suy giảm tương quan pha bất thường
+    # (Phase Jitter sụp đổ đột ngột tại ranh giới mô hình AI).
+    # Nếu sóng răng lược xuất hiện đồng nhất từ dải trầm lên dải cao (Synthesizer), không đánh lỗi.
     ai_detected = bool(
         not is_genuine_acoustic
+        and not is_uniform_synth_comb
+        and has_boundary_phase_collapse
         and (
-            (phase_jitter > 0.94 and max_repetition > 0.65 and comb_ripple > 7.0)
+            (phase_jitter > 0.92 and max_repetition > 0.65 and comb_ripple > 7.0)
             or (max_repetition > 0.80 and comb_ripple > 9.0)
         )
     )
@@ -176,8 +209,16 @@ def analyze_ai_artifacts(
         status = "FAILED"
         detail = (
             f"CẢNH BÁO: Phát hiện tạo tác AI / Neural Vocoder! "
-            f"Độ tán xạ pha dải cao {phase_jitter:.3f} (hỗn loạn cao) cùng chỉ số lặp cấu trúc mẫu {max_repetition:.2f} "
-            f"(biên độ gợn sóng comb {comb_ripple:.1f} dB). Đây là dấu vết thuật toán AI/AudioSR vẽ bù dải cao giả lập."
+            f"Độ tán xạ pha dải cao {phase_jitter:.3f} sụp đổ đột ngột qua ranh giới tần số "
+            f"cùng chỉ số lặp cấu trúc mẫu {max_repetition:.2f} (biên độ gợn sóng comb {comb_ripple:.1f} dB). "
+            f"Đây là dấu vết thuật toán AI/AudioSR vẽ bù dải cao giả lập."
+        )
+    elif is_uniform_synth_comb:
+        status = "PASSED"
+        detail = (
+            f"Đạt chuẩn (nhạc cụ điện tử): Cấu trúc sóng răng lược (comb ripple {comb_ripple:.1f} dB) "
+            "xuất hiện đồng nhất từ dải trầm-trung lên dải cao — đặc tính tự nhiên của Synthesizer / Chiptune, "
+            "không phải tạo tác AI."
         )
     else:
         status = "PASSED"

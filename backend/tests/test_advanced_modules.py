@@ -197,3 +197,106 @@ class TestModuleDAiArtifacts:
         assert res.ai_artifacts_detected is False
         assert res.status == "PASSED"
 
+    def test_synthesizer_uniform_comb_ripple_passes(self):
+        # Rule 6: Synthesizers with uniform comb structure from low-mid to high pass Module D
+        sr = 44_100
+        n = sr * 2
+        t = np.arange(n) / sr
+        # Chiptune/Square wave harmonic stack with uniform comb filtering
+        square_synth = np.sign(np.sin(2 * np.pi * 440 * t)).astype(np.float32) * 0.3
+        freqs = np.linspace(0, 22_050, 2049)
+
+        res = analyze_ai_artifacts(square_synth, sr, freqs)
+        assert res.ai_artifacts_detected is False
+        assert res.status == "PASSED"
+
+
+class TestDSPRuleRequirements:
+    def test_rule4_natural_decay_noise_floor_bypass(self):
+        # Rule 4: If mean_energy_after_knee <= -80 dBFS, knee is bypassed and Module B is PASSED
+        freqs = np.linspace(0, 22_050, 2049)
+        f_khz = freqs / 1000.0
+        smooth_db = np.zeros_like(f_khz)
+
+        # Drop into noise floor at 16 kHz
+        mask1 = f_khz < 16.0
+        smooth_db[mask1] = -50.0 - 5.0 * (f_khz[mask1] - 10.0)
+        # Shelf after 16 kHz is below -80 dBFS (e.g. -84 dBFS dither floor)
+        mask2 = f_khz >= 16.0
+        smooth_db[mask2] = -84.0
+
+        res = analyze_natural_decay(freqs, smooth_db)
+        assert res.violates_natural_decay is False
+        assert res.status == "PASSED"
+        assert "dưới -80 dBFS" in res.detail
+
+    def test_rule3_studio_master_pipeline_filter(self):
+        # Rule 3: fc >= 20.0 kHz, MDCT holes < 0.10, authentic bits -> Studio Master Filter, score >= 80
+        from schemas import BitDepthSchema, SpectralCutoffSchema, AntiSpoofSchema, UltrasonicSchema
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24, effective=24, wasted_bits=0, is_padded=False, suspicious_scaling=False, detail="24-bit"
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=22050.0,
+            detected_cutoff_hz=20500.0,
+            rolloff_slope_db_per_khz=-150.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 320k",
+            detail="Cutoff at 20.5 kHz",
+            hf_energy_14_20_db=-55.0,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.005,
+            holes_detected=False,
+            hf_envelope_correlation=0.75,
+            fake_noise_injected=False,
+            detail="Clean",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=False, ultrasonic_correlation=0.0, has_true_ultrasonic_transients=False, fake_hires_upsampled=False, detail="N/A"
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        assert spectral.is_studio_filter is True
+        assert spectral.is_brickwall is False
+        assert verdict.score >= 80
+        assert "Studio Master" in spectral.suspected_source_encoder or "Pipeline Filter" in spectral.suspected_source_encoder
+        assert verdict.status != "FAKE_UPSCALED"
+
+    def test_rule7_isolated_cutoff_never_high_confidence_fake(self):
+        # Rule 7: Cutoff < 20 kHz with 0% MDCT holes and valid bit depth never declares FAKE with HIGH confidence
+        from schemas import BitDepthSchema, SpectralCutoffSchema, AntiSpoofSchema, UltrasonicSchema
+        from core.scorer import score_and_verdict
+
+        bit_depth = BitDepthSchema(
+            declared=24, effective=24, wasted_bits=0, is_padded=False, suspicious_scaling=False, detail="24-bit"
+        )
+        spectral = SpectralCutoffSchema(
+            nyquist_hz=22050.0,
+            detected_cutoff_hz=18000.0,
+            rolloff_slope_db_per_khz=-80.0,
+            is_brickwall=True,
+            is_studio_filter=False,
+            suspected_source_encoder="MP3 192k",
+            detail="Cutoff at 18.0 kHz",
+            hf_energy_14_20_db=-60.0,
+        )
+        anti_spoof = AntiSpoofSchema(
+            spectral_holes_ratio=0.0,
+            holes_detected=False,
+            hf_envelope_correlation=0.6,
+            fake_noise_injected=False,
+            detail="Clean",
+        )
+        ultrasonic = UltrasonicSchema(
+            applicable=False, ultrasonic_correlation=0.0, has_true_ultrasonic_transients=False, fake_hires_upsampled=False, detail="N/A"
+        )
+
+        verdict = score_and_verdict(bit_depth, spectral, anti_spoof, ultrasonic)
+        # Even if severe slope lowers score, confidence MUST NOT be HIGH
+        assert verdict.confidence != "HIGH"
+
+

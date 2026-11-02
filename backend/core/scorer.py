@@ -60,32 +60,43 @@ def score_and_verdict(
     deductions: list[str] = []
 
     fc = spectral.detected_cutoff_hz
-    # Cross-validation guard: Cutoff at >= 20.5 kHz with clean MDCT (holes_detected is False and ratio < 0.15)
-    # Phân loại là "Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter)", không trừ điểm.
-    is_studio_master = (
-        fc is not None
-        and fc >= 20_500.0
-        and not anti_spoof.holes_detected
-        and anti_spoof.spectral_holes_ratio < 0.15
+    # ── Rule 3: Phân biệt Bộ lọc Phòng thu (Digital Master / Pipeline Filter) ở ngưỡng 20.0 – 22.05 kHz ──
+    # Nếu cutoff_freq >= 20.0 kHz VÀ mdct_hole_ratio < 0.10 (Sạch, không có lỗ nén) VÀ bit_depth đạt chuẩn:
+    # -> Phân loại là: "Giới hạn tần số từ bản gốc phòng thu (Studio Master / 44.1kHz Pipeline Filter)"
+    # -> Không đánh rớt xuống "Lossless Giả". Giữ điểm số tổng ở mức Đạt chuẩn / Khả quan (>= 80 điểm).
+    is_authentic_bits = (
+        not bit_depth.is_padded
+        and not bit_depth.suspicious_scaling
+        and bit_depth.effective >= 16
     )
-    is_digital_master = (
+    is_clean_mdct = (
+        anti_spoof.spectral_holes_ratio < 0.10
+        and not anti_spoof.holes_detected
+    )
+    is_studio_pipeline_filter = (
         fc is not None
         and fc >= 20_000.0
-        and anti_spoof.spectral_holes_ratio < 0.04
-        and not anti_spoof.holes_detected
+        and is_clean_mdct
+        and is_authentic_bits
     )
-    if is_studio_master or is_digital_master:
+
+    if is_studio_pipeline_filter:
         spectral.is_studio_filter = True
         spectral.is_brickwall = False
+        slope_val = spectral.rolloff_slope_db_per_khz or 0.0
         if fc and fc >= 21_000.0:
             spectral.suspected_source_encoder = "Studio Anti-Aliasing Filter (Redbook CD)"
-        elif not getattr(spectral, "suspected_source_encoder", None) or "MP3" in (spectral.suspected_source_encoder or ""):
-            spectral.suspected_source_encoder = "Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter)"
-        if is_studio_master and not is_digital_master:
             spectral.detail = (
-                f"Tần số cắt {fc/1000:.2f} kHz nằm ở dải cao (>=20.5 kHz) và tỷ lệ lỗ nén MDCT đạt chuẩn ({anti_spoof.spectral_holes_ratio:.1%}). "
-                f"Phân loại là Giới hạn tần số từ bản gốc phòng thu (Studio Master Filter). "
-                "Không phải dấu hiệu nén lossy."
+                f"Studio anti-aliasing filter detected at {fc/1000:.2f} kHz "
+                f"(slope {slope_val:.1f} dB/kHz) near Nyquist boundary. "
+                "Preserves genuine Redbook CD audio bandwidth."
+            )
+        else:
+            spectral.suspected_source_encoder = "Giới hạn tần số từ bản gốc phòng thu (Studio Master / 44.1kHz Pipeline Filter)"
+            spectral.detail = (
+                f"Giới hạn tần số từ bản gốc phòng thu (Studio Master / 44.1kHz Pipeline Filter) phát hiện tại {fc/1000:.2f} kHz "
+                f"(độ dốc {abs(slope_val):.1f} dB/kHz). Tỷ lệ lỗ nén MDCT sạch ({anti_spoof.spectral_holes_ratio:.1%}) "
+                f"và độ sâu bit đạt chuẩn ({bit_depth.effective}-bit). Toàn bộ dải phổ âm thanh nguyên bản phòng thu được bảo toàn."
             )
 
     is_lossy_brickwall = spectral.is_brickwall and not getattr(spectral, "is_studio_filter", False)
@@ -94,27 +105,34 @@ def score_and_verdict(
 
     # A. Brickwall cutoffs
     if fc is not None and is_lossy_brickwall:
-        # ── Điều kiện ràng buộc (Gatekeeping) giữa Brickwall và MDCT: ────────
-        # Nếu Cutoff < 19.5 kHz nhưng Tỷ lệ lỗ nén MDCT == 0.0% VÀ năng lượng tổng thể dải 14–20 kHz rất thấp (nhạc thưa/acoustic):
-        # Không được gắn nhãn "Lossless Giả (Độ tin cậy cao)". Hãy chuyển sang cảnh báo màu vàng.
+        # ── Rule 7: Gatekeeping giữa Brickwall và MDCT ────────────────────────
+        # Không bao giờ được phép gán nhãn "Lossless Giả (Độ tin cậy cao)" nếu chỉ dựa vào
+        # DUY NHẤT tiêu chí cutoff_freq < 20 kHz trong khi MDCT Holes == 0% và Bit Depth == Đạt chuẩn.
         hf_energy_14_20 = getattr(spectral, "hf_energy_14_20_db", None)
         if hf_energy_14_20 is None:
             hf_energy_14_20 = -100.0
 
-        is_acoustic_sparse_gate = (
+        is_strict_clean_mdct = (anti_spoof.spectral_holes_ratio <= 0.01 and not anti_spoof.holes_detected)
+        no_other_fakes = (
+            not anti_spoof.fake_noise_injected
+            and (advanced is None or not advanced.ai_artifacts.ai_artifacts_detected)
+            and (advanced is None or not advanced.phase_coherence.is_stealth_noise_layer)
+        )
+
+        is_isolated_sparse_limit = (
             fc < 19_500.0
-            and anti_spoof.spectral_holes_ratio <= 0.005
-            and not anti_spoof.holes_detected
-            and hf_energy_14_20 < -68.0
+            and is_strict_clean_mdct
+            and is_authentic_bits
+            and no_other_fakes
             and (spectral.rolloff_slope_db_per_khz is None or abs(spectral.rolloff_slope_db_per_khz) < 50.0)
         )
 
-        if is_acoustic_sparse_gate:
-            score -= 15
-            flags.append("SUSPICIOUS_ACOUSTIC_LIMIT")
-            soft_anomalies.append("acoustic_sparse_limit")
+        if is_isolated_sparse_limit:
+            score -= 20
+            flags.append("SUSPICIOUS_BANDWIDTH_LIMIT")
+            soft_anomalies.append("isolated_bandwidth_limit")
             deductions.append(
-                f"Giới hạn âm học tự nhiên (Bản thu ít nhạc cụ dải cao) hoặc nghi vấn cắt tần tại {fc/1000:.1f} kHz (-15)"
+                f"Nghi vấn giới hạn băng thông tại {fc/1000:.1f} kHz không kèm lỗ nén MDCT hay chèn bit giả (-20)"
             )
         elif fc <= 16_800:
             score -= SCORE_DEDUCTIONS["brickwall_low"]
@@ -273,16 +291,25 @@ def score_and_verdict(
     score = max(0, min(100, score))
 
     # ── 4. FOUR-TIER STATUS & LABEL ASSIGNMENT ───────────────────────────────
-    # Tier 1: 85–100 → AUTHENTIC_LOSSLESS
-    # Tier 2: 60–84  → SUSPICIOUS / SUSPICIOUS_ANOMALY / SUSPICIOUS_TRANSCODE
-    # Tier 3:  0–59  → FAKE_UPSCALED / FAKE_SPOOFED / FAKE_BIT_DEPTH / UPSAMPLED_HIRES
+    # Rule 7: Đồng bộ Logic Kết Luận Tổng (Final Verdict & Confidence Score)
+    # Không bao giờ được phép gán nhãn "Lossless Giả (Độ tin cậy cao)" nếu chỉ dựa vào DUY NHẤT
+    # tiêu chí cutoff_freq < 20 kHz trong khi MDCT Holes == 0% và Bit Depth == Đạt chuẩn.
+    only_cutoff_evidence = (
+        len(hard_evidences) == 1
+        and any(e in ("brickwall_low", "brickwall_mid", "brickwall_high") for e in hard_evidences)
+        and (anti_spoof.spectral_holes_ratio <= 0.01 and not anti_spoof.holes_detected)
+        and (not bit_depth.is_padded and not bit_depth.suspicious_scaling)
+    )
+
     if score >= VERDICT_AUTHENTIC:
         status = "AUTHENTIC_LOSSLESS"
         label = "Authentic Lossless"
         confidence = "HIGH" if score >= 90 else "MEDIUM"
     elif score >= VERDICT_SUSPICIOUS:
         # 60–84: Suspicious / Anomaly (Màu vàng)
-        if "SUSPICIOUS_ACOUSTIC_LIMIT" in flags:
+        if "SUSPICIOUS_BANDWIDTH_LIMIT" in flags:
+            status = "SUSPICIOUS_BANDWIDTH_LIMIT"
+        elif "SUSPICIOUS_ACOUSTIC_LIMIT" in flags:
             status = "SUSPICIOUS_ACOUSTIC_LIMIT"
         elif "SUSPICIOUS_TRANSCODE" in flags:
             status = "SUSPICIOUS_TRANSCODE"
@@ -293,12 +320,16 @@ def score_and_verdict(
         else:
             status = flags[0] if flags else "SUSPICIOUS"
         label = _make_label(status, fc, anti_spoof)
-        confidence = "MEDIUM"
+        confidence = "LOW" if only_cutoff_evidence else "MEDIUM"
     else:
         # 0–59: Confirmed Fake / Transcode
         status = flags[0] if flags else "FAKE_UPSCALED"
         label = _make_label(status, fc, anti_spoof)
-        confidence = "HIGH" if score <= 40 else "MEDIUM"
+        # Tuyệt đối không để HIGH confidence nếu chỉ có duy nhất cutoff mà MDCT Holes sạch và Bit Depth chuẩn
+        if only_cutoff_evidence:
+            confidence = "MEDIUM"
+        else:
+            confidence = "HIGH" if score <= 40 else "MEDIUM"
 
     # ── 5. SUMMARY GENERATION ────────────────────────────────────────────────
     if deductions:
@@ -331,6 +362,8 @@ def _make_label(
     fc: Optional[float],
     anti_spoof: AntiSpoofSchema,
 ) -> str:
+    if status == "SUSPICIOUS_BANDWIDTH_LIMIT":
+        return f"Nghi vấn giới hạn băng thông ({fc/1000:.1f} kHz) / Cần kiểm tra thủ công" if fc else "Nghi vấn giới hạn băng thông / Cần kiểm tra thủ công"
     if status == "SUSPICIOUS_ACOUSTIC_LIMIT":
         return "Giới hạn âm học tự nhiên (Bản thu ít nhạc cụ dải cao) hoặc nghi vấn cắt tần — Cần kiểm tra đỉnh phổ cục bộ"
     if status == "SUSPICIOUS_ANOMALY":

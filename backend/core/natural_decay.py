@@ -100,18 +100,11 @@ def analyze_natural_decay(
         # Pre-energy and post-energy
         post_energy = float(np.mean(smooth_db[idx : idx + window_pts]))
 
-        # Bỏ qua phép đo khi năng lượng chạm đáy (Noise Floor):
-        # Nếu dải phẳng nằm dưới ngưỡng -80 dBFS (ngưỡng -80 đến -90 dBFS), đó là nền nhiễu tự nhiên
-        # (noise floor/dither) sau khi họa âm nhạc cụ đã tắt hết — hoàn toàn bình thường với các bản nhạc acoustic nhẹ nhàng.
-        if post_energy <= -80.0:
-            continue
-
-        # Condition for unnatural lossy knee:
+        # Condition for slope knee:
         # Pre-slope is steep negative (<= -6.0 dB/kHz) or drop is steep,
         # AND post-slope suddenly flattens into a horizontal shelf (|slope| <= 2.2 dB/kHz)
-        # with post-energy in active audible band (above -80 dBFS up to -55 dBFS).
         slope_gap = post_slope_mean - pre_slope_mean  # positive jump from steep negative to flat
-        if pre_slope_mean <= -6.0 and post_slope_abs <= 2.2 and slope_gap >= 4.5 and post_energy > -80.0:
+        if pre_slope_mean <= -6.0 and post_slope_abs <= 2.2 and slope_gap >= 4.5:
             # Score this candidate
             # Closeness to common lossy boundaries: 16.0 kHz, 18.5 kHz, 20.0 kHz
             target_dist = min(
@@ -167,9 +160,13 @@ def analyze_natural_decay(
             or (has_studio_filter and hf_energy > -78.0)
         )
 
-        # Kiểm tra nếu dải phẳng sau điểm gãy nằm dưới ngưỡng -80 dBFS (ngưỡng -80 đến -90 dBFS):
-        # Đây là nền nhiễu tự nhiên (noise floor/dither) sau khi họa âm nhạc cụ đã tắt hết
-        is_noise_floor = best_knee.get("post_energy", -100.0) <= -80.0
+        # Tính mức năng lượng trung bình mean_energy_after_knee của dải phẳng sau điểm gãy:
+        after_knee_mask = (eval_freqs >= f_knee) & (eval_freqs <= min(21.5, nyquist / 1000.0))
+        mean_energy_after_knee = float(np.mean(eval_db[after_knee_mask])) if after_knee_mask.sum() > 0 else float(best_knee.get("post_energy", -100.0))
+
+        # Kiểm tra nếu dải phẳng sau điểm gãy nằm dưới ngưỡng -80 dBFS:
+        # Tín hiệu đã chạm đáy nhiễu tĩnh / dither floor -> BỎ QUA cảnh báo điểm gãy, đánh giá ĐẠT CHUẨN
+        is_noise_floor = (mean_energy_after_knee <= -80.0) or (best_knee.get("post_energy", -100.0) <= -80.0)
 
         discontinuity_score = min(1.0, gap / 15.0)
 
@@ -177,9 +174,9 @@ def analyze_natural_decay(
             violates = False
             status = "PASSED"
             detail = (
-                f"Độ suy giảm phổ tần tại {f_knee:.2f} kHz chuyển sang dải phẳng ở mức năng lượng chạm đáy "
-                f"({best_knee['post_energy']:.1f} dBFS <= -80 dBFS). Đây là nền nhiễu tự nhiên (noise floor/dither) "
-                f"sau khi họa âm nhạc cụ đã tắt hết — hoàn toàn bình thường với các bản nhạc acoustic nhẹ nhàng."
+                f"Chạm ngưỡng nền nhiễu tự nhiên dưới -80 dBFS "
+                f"(mức năng lượng sau điểm gãy tại {f_knee:.2f} kHz đạt {mean_energy_after_knee:.1f} dBFS <= -80 dBFS). "
+                f"Đây là nền nhiễu tự nhiên (noise floor/dither) sau khi họa âm nhạc cụ đã tắt hết — hoàn toàn bình thường với các bản nhạc acoustic nhẹ nhàng."
             )
         elif is_mix_quirk:
             violates = False

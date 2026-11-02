@@ -94,27 +94,50 @@ def analyze_anti_spoof(
     nyquist = sample_rate / 2.0
 
     # ════════════════════════════════════════════════════════════════════════
-    # Test A: Spectral Holes in 12 kHz – 16 kHz
+    # Test A: Spectral Holes in 12 kHz – 16 kHz (Chống bắt nhầm nhạc ngắt quãng)
     # ════════════════════════════════════════════════════════════════════════
+    # Chỉ đếm một ô thời gian-tần số ở dải 12–16 kHz là "Lỗ nén MDCT" khi và chỉ khi:
+    # Cùng tại frame thời gian đó, dải tần thấp-trung (1 kHz – 8 kHz) đang có năng lượng cao
+    # (> -40 dBFS), nhưng dải 12–16 kHz lại bị khoét rỗng cục bộ (band-stop drop > 35 dB
+    # so với các bin tần số lân cận).
     hole_mask = _band_mask(freqs, HOLE_BAND_LOW_HZ, min(HOLE_BAND_HIGH_HZ, nyquist))
+    mid_active_mask = _band_mask(freqs, 1000.0, 8000.0)
 
-    if hole_mask.sum() < 2:
+    if hole_mask.sum() < 2 or mid_active_mask.sum() == 0:
         spectral_holes_ratio = 0.0
         holes_detected       = False
     else:
-        sub_band = stft_magnitude_db[hole_mask, :]           # (F', T)
-        median   = float(np.median(sub_band))
-        # Fraction of bins more than HOLE_DROP_DB below median
-        drop_mask = sub_band < (median - HOLE_DROP_DB)
-        spectral_holes_ratio = float(drop_mask.mean())
-        holes_detected       = spectral_holes_ratio > HOLE_RATIO_THRESH
-        logger.debug(
-            "Spectral holes: ratio=%.3f, threshold=%.2f, detected=%s",
-            spectral_holes_ratio, HOLE_RATIO_THRESH, holes_detected,
-        )
+        # Năng lượng dải thấp-trung (1–8 kHz) theo từng frame thời gian
+        frame_mid_energy = np.percentile(stft_magnitude_db[mid_active_mask, :], 85, axis=0)
+        active_frames = frame_mid_energy > -40.0
+
+        if active_frames.sum() < 5:
+            # Nhạc quá thưa hoặc không có frame nào đủ năng lượng > -40 dBFS
+            spectral_holes_ratio = 0.0
+            holes_detected       = False
+        else:
+            # Chỉ xét trên các frame đang có âm nhạc hoạt động mạnh:
+            sub_band = stft_magnitude_db[hole_mask, :][:, active_frames]  # (F_hole, T_active)
+
+            # Tính baseline lân cận trong cùng frame (so với trung bình dải lân cận ngay trên/dưới)
+            # hoặc rolling median theo trục tần số:
+            from scipy.ndimage import uniform_filter1d
+            # Filter trên dải 12-16k để tìm đường bao cục bộ
+            local_context = uniform_filter1d(sub_band, size=5, axis=0, mode="nearest")
+            # Điểm rơi cục bộ: năng lượng tụt sâu > 35 dB so với lân cận hoặc so với mức trung vị frame
+            frame_medians = np.median(sub_band, axis=0, keepdims=True)
+            reference_energy = np.maximum(local_context, frame_medians)
+
+            drop_mask = (reference_energy - sub_band) > HOLE_DROP_DB
+            spectral_holes_ratio = float(drop_mask.mean())
+            holes_detected = spectral_holes_ratio > HOLE_RATIO_THRESH
+            logger.debug(
+                "Spectral holes (active frames=%d): ratio=%.3f, threshold=%.2f, detected=%s",
+                int(active_frames.sum()), spectral_holes_ratio, HOLE_RATIO_THRESH, holes_detected,
+            )
 
     # ════════════════════════════════════════════════════════════════════════
-    # Test B: HF Temporal Envelope Correlation
+    # Test B: HF Temporal Envelope Correlation & Anti-Tape-Hiss Guard
     # ════════════════════════════════════════════════════════════════════════
     hf_mask  = _band_mask(freqs, HF_BAND_LOW_HZ,  min(HF_BAND_HIGH_HZ, nyquist))
     mid_mask = _band_mask(freqs, MID_BAND_LOW_HZ, MID_BAND_HIGH_HZ)
@@ -146,11 +169,37 @@ def analyze_anti_spoof(
                 hf_envelope_correlation = 1.0  # insufficient data → assume genuine
 
             if hf_envelope_correlation < CORRELATION_THRESH and std_hf < HF_STDEV_THRESH_DB:
-                fake_noise_injected = True
-                detail_b = (
-                    f"HF energy (16.5–21.5 kHz) is stationary (σ={std_hf:.2f} dB, "
-                    f"r={hf_envelope_correlation:.3f}) — consistent with injected synthetic noise."
+                # ── Kiểm tra chống bắt nhầm tiếng xì băng từ (Analog Tape Hiss) ──
+                # Đặc tính Tape Hiss: Nền nhiễu thực tế tồn tại xuyên suốt cả ở dải trung (1–8 kHz)
+                # và dải cao (>16.5 kHz) ở mức -75 đến -88 dBFS (không phải digital silence <-92 dBFS),
+                # và phổ tần suy giảm mượt (smooth roll-off), không có bước nhảy đột biến (step shelf).
+                mid_noise_floor = float(np.percentile(stft_magnitude_db[mid_mask, :], 10))
+                hf_noise_floor  = float(np.percentile(stft_magnitude_db[hf_raw_mask, :], 10))
+
+                mid_high_mask = (freqs >= 12_000.0) & (freqs <= 16_000.0)
+                profile_hf_mean = float(np.mean(smoothed_profile[hf_raw_mask])) if hf_raw_mask.sum() > 0 else -100.0
+                profile_mid_high_mean = float(np.mean(smoothed_profile[mid_high_mask])) if mid_high_mask.sum() > 0 else -100.0
+
+                is_tape_hiss = (
+                    (hf_noise_floor > -92.0)
+                    and (mid_noise_floor > -90.0)
+                    and (abs(hf_noise_floor - mid_noise_floor) <= 12.0)
+                    and (profile_hf_mean <= profile_mid_high_mean + 4.0)
                 )
+
+                if is_tape_hiss:
+                    fake_noise_injected = False
+                    detail_b = (
+                        f"Phát hiện tiếng xì băng từ tự nhiên (Analog Tape Hiss, r={hf_envelope_correlation:.3f}, "
+                        f"sàn nhiễu ~{hf_noise_floor:.1f} dBFS phân bổ đồng nhất xuyên suốt dải trung và dải cao). "
+                        "Phổ suy giảm mượt, không phải bơm nhiễu nhân tạo."
+                    )
+                else:
+                    fake_noise_injected = True
+                    detail_b = (
+                        f"HF energy (16.5–21.5 kHz) is stationary (σ={std_hf:.2f} dB, "
+                        f"r={hf_envelope_correlation:.3f}) — consistent with injected synthetic noise."
+                    )
             else:
                 detail_b = (
                     f"HF envelope correlation r={hf_envelope_correlation:.3f}, "
