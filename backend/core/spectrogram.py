@@ -37,9 +37,9 @@ def render_spectrogram(
     float32_mono: np.ndarray,
     sample_rate: int,
     detected_cutoff_hz: Optional[float] = None,
-    width_px: int = 1200,
-    height_px: int = 500,
-    dpi: int = 100,
+    width_px: int = 900,
+    height_px: int = 380,
+    dpi: int = 80,
 ) -> str:
     """
     Render a spectrogram PNG and return as a base64-encoded data-URI string.

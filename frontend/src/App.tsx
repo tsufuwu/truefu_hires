@@ -11,9 +11,14 @@ import {
   Play,
   HelpCircle,
   Heart,
+  ListMusic,
+  Clock,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import {
   analyzeFile,
+  analyzeFiles,
   analyzeSample,
   getSamples,
   API_BASE,
@@ -32,9 +37,35 @@ import { SpectrogramModal } from './components/SpectrogramModal';
 import { ExplainModal, type ExplanationKey } from './components/ExplainModal';
 import logoImg from './assets/logo.png';
 
+// Seconds per file estimate on free-tier backend
+const SEC_PER_FILE_SHORT = 8;   // < 3 min
+const SEC_PER_FILE_LONG  = 15;  // >= 3 min
+
+function estimateSeconds(files: File[]): number {
+  return files.reduce((acc, f) => {
+    const estimatedDurationMin = (f.size / (1024 * 1024)) * 2; // rough: 1 MB ≈ 2 min of FLAC
+    return acc + (estimatedDurationMin < 3 ? SEC_PER_FILE_SHORT : SEC_PER_FILE_LONG);
+  }, 0);
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `~${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `~${m}m ${s}s` : `~${m}m`;
+}
+
+type BatchItem =
+  | { status: 'pending'; filename: string }
+  | { status: 'processing'; filename: string }
+  | { status: 'done'; filename: string; result: AnalysisResult }
+  | { status: 'error'; filename: string; error: string };
+
 type State =
   | { phase: 'idle' }
   | { phase: 'loading'; currentTarget?: string }
+  | { phase: 'batch_loading'; items: BatchItem[]; eta: number; currentIndex: number }
+  | { phase: 'batch_done'; items: BatchItem[] }
   | { phase: 'done'; result: AnalysisResult }
   | { phase: 'error'; message: string };
 
@@ -50,6 +81,7 @@ export default function App() {
   const [loadingSampleId, setLoadingSampleId] = useState<string | null>(null);
   const [explainKey, setExplainKey] = useState<ExplanationKey | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [activeBatchIdx, setActiveBatchIdx] = useState<number>(0);
 
   const t = translations[lang];
 
@@ -61,6 +93,13 @@ export default function App() {
   useEffect(() => {
     getSamples().then(setSamples).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (state.phase === 'batch_done') {
+      const firstDone = state.items.findIndex(i => i.status === 'done');
+      setActiveBatchIdx(firstDone >= 0 ? firstDone : 0);
+    }
+  }, [state.phase]);
 
   const handleFile = useCallback(async (file: File) => {
     if (audioUrl && audioUrl.startsWith('blob:')) {
@@ -77,6 +116,35 @@ export default function App() {
       setState({ phase: 'error', message: err.message || 'Analysis failed' });
     }
   }, [audioUrl]);
+
+  const handleFiles = useCallback(async (files: File[]) => {
+    if (files.length === 1) {
+      handleFile(files[0]);
+      return;
+    }
+    // Batch mode
+    if (audioUrl && audioUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(audioUrl);
+    }
+    setAudioUrl(null);
+    const etaSec = estimateSeconds(files);
+    const initialItems: BatchItem[] = files.map(f => ({ status: 'pending', filename: f.name }));
+    setState({ phase: 'batch_loading', items: initialItems, eta: etaSec, currentIndex: 0 });
+
+    // Process files sequentially on frontend using analyzeFiles (backend also processes sequentially)
+    try {
+      const batchResults = await analyzeFiles(files);
+      const doneItems: BatchItem[] = batchResults.map((r) => {
+        if ('error' in r) {
+          return { status: 'error', filename: r.filename, error: r.error };
+        }
+        return { status: 'done', filename: r.filename, result: r as AnalysisResult };
+      });
+      setState({ phase: 'batch_done', items: doneItems });
+    } catch (err: any) {
+      setState({ phase: 'error', message: err.message || 'Batch analysis failed' });
+    }
+  }, [audioUrl, handleFile]);
 
   const handleSelectSample = useCallback(async (sampleId: string, sampleTitle: string) => {
     if (audioUrl && audioUrl.startsWith('blob:')) {
@@ -301,7 +369,7 @@ export default function App() {
 
             {/* 1. PRIMARY ACTION: FILE UPLOAD ZONE AT THE TOP (NO CLUTTER) */}
             <div className="w-full mb-6">
-              <UploadZone onFile={handleFile} isLoading={false} t={t.upload} />
+              <UploadZone onFile={handleFile} onFiles={handleFiles} isLoading={false} t={t.upload} />
             </div>
 
             {/* 2. COMPACT AUDIOPHILE SIGNAL MONITOR (DUAL STEREO VU METERS) */}
@@ -428,6 +496,210 @@ export default function App() {
           </div>
         )}
 
+        {/* ── BATCH LOADING PHASE ────────────────────────────────────── */}
+        {state.phase === 'batch_loading' && (
+          <div className="fade-in py-8 flex flex-col items-center w-full gap-6">
+            <div className="w-full max-w-2xl">
+              {/* ETA Banner */}
+              <div
+                className="flex items-center justify-between gap-3 px-5 py-3 rounded-2xl mb-5"
+                style={{
+                  background: 'rgba(0, 229, 255, 0.06)',
+                  border: '1px solid rgba(0, 229, 255, 0.2)',
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <ListMusic size={18} className="text-cyan-400" />
+                  <span className="text-sm font-bold text-slate-200">
+                    Đang phân tích {state.items.length} file nhạc...
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-cyan-300 font-semibold">
+                  <Clock size={13} />
+                  <span>Dự kiến hoàn tất: {formatEta(state.eta)}</span>
+                </div>
+              </div>
+
+              {/* File Queue */}
+              <div className="flex flex-col gap-2">
+                {state.items.map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl"
+                    style={{
+                      background: idx === state.currentIndex
+                        ? 'rgba(0, 229, 255, 0.08)'
+                        : 'rgba(255, 255, 255, 0.02)',
+                      border: idx === state.currentIndex
+                        ? '1px solid rgba(0, 229, 255, 0.3)'
+                        : '1px solid rgba(99, 130, 201, 0.12)',
+                    }}
+                  >
+                    <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+                      {item.status === 'processing' ? (
+                        <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                      ) : item.status === 'done' ? (
+                        <CheckCircle2 size={16} className="text-emerald-400" />
+                      ) : item.status === 'error' ? (
+                        <XCircle size={16} className="text-rose-400" />
+                      ) : (
+                        <div className="w-2 h-2 rounded-full bg-slate-600" />
+                      )}
+                    </div>
+                    <span className="text-sm text-slate-300 truncate flex-1">{item.filename}</span>
+                    <span className="text-xs text-slate-500 shrink-0">
+                      {idx + 1}/{state.items.length}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Progress bar */}
+              <div className="mt-4 w-full h-2 rounded-full overflow-hidden bg-slate-900 border border-cyan-500/20">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${(state.currentIndex / state.items.length) * 100}%`,
+                    background: 'linear-gradient(90deg, #00e5ff, #3b82f6)',
+                    boxShadow: '0 0 12px rgba(0, 229, 255, 0.4)',
+                  }}
+                />
+              </div>
+            </div>
+            <SignalMonitor isLoading={true} lang={lang} />
+          </div>
+        )}
+
+        {/* ── BATCH DONE PHASE ──────────────────────────────────────── */}
+        {state.phase === 'batch_done' && (() => {
+          const successItems = state.items.filter(i => i.status === 'done');
+          const errorItems = state.items.filter(i => i.status === 'error');
+          const activeItem = state.items[activeBatchIdx];
+
+          return (
+            <div className="fade-in flex flex-col gap-4 w-full">
+              {/* Summary Header */}
+              <div
+                className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 rounded-2xl"
+                style={{
+                  background: 'rgba(16, 185, 129, 0.06)',
+                  border: '1px solid rgba(16, 185, 129, 0.2)',
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <ListMusic size={18} className="text-emerald-400" />
+                  <span className="text-sm font-bold text-slate-200">
+                    Hoàn tất {successItems.length}/{state.items.length} file ·{' '}
+                    {errorItems.length > 0 && (
+                      <span className="text-rose-400">{errorItems.length} lỗi</span>
+                    )}
+                  </span>
+                </div>
+                <button
+                  onClick={reset}
+                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl"
+                  style={{
+                    background: 'rgba(0, 229, 255, 0.1)',
+                    border: '1px solid rgba(0, 229, 255, 0.3)',
+                    color: 'var(--accent-cyan)',
+                  }}
+                >
+                  <RefreshCw size={12} />
+                  <span>Kiểm tra mới</span>
+                </button>
+              </div>
+
+              {/* File Tabs */}
+              <div className="flex flex-wrap gap-2">
+                {state.items.map((item, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => item.status === 'done' && setActiveBatchIdx(idx)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all"
+                    style={{
+                      background: activeBatchIdx === idx
+                        ? 'rgba(0, 229, 255, 0.15)'
+                        : 'rgba(255, 255, 255, 0.03)',
+                      border: activeBatchIdx === idx
+                        ? '1px solid rgba(0, 229, 255, 0.4)'
+                        : '1px solid rgba(99, 130, 201, 0.15)',
+                      color: activeBatchIdx === idx ? '#00e5ff'
+                        : item.status === 'error' ? '#fb7185' : '#94a3b8',
+                      cursor: item.status === 'done' ? 'pointer' : 'default',
+                    }}
+                  >
+                    {item.status === 'done' ? (
+                      <CheckCircle2 size={12} className="text-emerald-400" />
+                    ) : (
+                      <XCircle size={12} className="text-rose-400" />
+                    )}
+                    <span className="max-w-[140px] truncate">{item.filename}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Active Result */}
+              {activeItem?.status === 'done' && (() => {
+                const result = activeItem.result;
+                return (
+                  <div className="flex flex-col gap-4 w-full">
+                    <VerdictBanner
+                      verdict={result.verdict}
+                      metadata={result.metadata}
+                      filename={result.filename}
+                      t={t.verdict}
+                      lang={lang}
+                      audioUrl={null}
+                    />
+                    <MetricsGrid
+                      bitDepth={result.pillars.bit_depth}
+                      spectral={result.pillars.spectral_cutoff}
+                      antiSpoof={result.pillars.anti_spoof}
+                      ultrasonic={result.pillars.ultrasonic}
+                      t={t.pillars}
+                      lang={lang}
+                    />
+                    {result.advanced && (
+                      <AdvancedGrid advanced={result.advanced} t={t.advanced} lang={lang} />
+                    )}
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                      <RolloffChart
+                        data={result.visuals.rolloff_curve}
+                        detectedCutoffHz={result.pillars.spectral_cutoff.detected_cutoff_hz}
+                        t={t.visuals}
+                      />
+                      <SpectrogramModal
+                        base64={result.visuals.spectrogram_base64}
+                        detectedCutoffHz={result.pillars.spectral_cutoff.detected_cutoff_hz}
+                        t={t.visuals}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Error item display */}
+              {activeItem?.status === 'error' && (
+                <div
+                  className="card p-5 flex items-start gap-3 border"
+                  style={{ borderColor: 'rgba(244,63,94,0.3)', background: 'rgba(244,63,94,0.07)' }}
+                >
+                  <XCircle size={20} className="text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-bold text-rose-400">{activeItem.filename}</p>
+                    <p className="text-xs text-slate-300 mt-1">{activeItem.error}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Upload More */}
+              <div className="pt-2 pb-2 max-w-xl mx-auto w-full">
+                <UploadZone onFile={handleFile} onFiles={handleFiles} isLoading={false} t={t.upload} />
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── ERROR PHASE ───────────────────────────────────────────── */}
         {state.phase === 'error' && (
           <div className="fade-in max-w-xl mx-auto w-full">
@@ -515,7 +787,7 @@ export default function App() {
                     {t.bottomUpload}
                   </span>
                 </div>
-                <UploadZone onFile={handleFile} isLoading={false} t={t.upload} />
+                <UploadZone onFile={handleFile} onFiles={handleFiles} isLoading={false} t={t.upload} />
               </div>
             </div>
           );

@@ -12,11 +12,11 @@ SUPPORTED_EXTENSIONS = {".flac", ".wav", ".alac", ".ape", ".wv", ".dsf", ".dff"}
 DSD_EXTENSIONS = {".dsf", ".dff"}
 
 # Maximum seconds of audio to analyse per pillar
-MAX_ANALYSIS_SECONDS = 60
+MAX_ANALYSIS_SECONDS = 30
 
 # Number of 10-s chunks to sample from long tracks (at 20 %, 50 %, 80 % positions)
 SAMPLE_POSITIONS = [0.20, 0.50, 0.80]
-CHUNK_DURATION_SEC = 10
+CHUNK_DURATION_SEC = 8
 
 # DSD-to-PCM conversion: target 24-bit / 88.2 kHz
 DSD_PCM_SAMPLE_RATE = 88200
@@ -29,9 +29,9 @@ LSB_ENTROPY_SAMPLE_LIMIT = 1_000_000
 MIN_DISTINCT_BOTTOM_BYTE_VALUES = 16
 
 # ── STFT parameters ─────────────────────────────────────────────────────────
-STFT_NPERSEG_LOW  = 4096    # for sample_rate ≤ 48 000 Hz
+STFT_NPERSEG_LOW  = 2048    # for sample_rate ≤ 48 000 Hz
 STFT_NPERSEG_HIGH = 8192    # for sample_rate > 48 000 Hz
-STFT_NOVERLAP_LOW  = 2048
+STFT_NOVERLAP_LOW  = 1024
 STFT_NOVERLAP_HIGH = 4096
 
 # Percentile used for spectral profile:

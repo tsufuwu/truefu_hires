@@ -3,8 +3,11 @@ import React, { useCallback, useRef, useState } from 'react';
 import { Upload, Loader2, Sparkles, AudioWaveform, Music2 } from 'lucide-react';
 import type { translations } from '../i18n';
 
+const MAX_FILES = 5;
+
 interface Props {
   onFile: (file: File) => void;
+  onFiles?: (files: File[]) => void;
   isLoading: boolean;
   t: typeof translations['en']['upload'];
 }
@@ -21,21 +24,31 @@ const ACCEPTED_EXTENSIONS = [
 
 const ACCEPT_STRING = '.flac,.wav,.alac,.ape,.wv,.dsf,.dff';
 
-export function UploadZone({ onFile, isLoading, t }: Props) {
+export function UploadZone({ onFile, onFiles, isLoading, t }: Props) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback((file: File) => {
+  const handleFiles = useCallback((files: File[]) => {
     if (isLoading) return;
-    onFile(file);
-  }, [onFile, isLoading]);
+    const valid = files.filter(f => ACCEPTED_EXTENSIONS.some(e => f.name.toLowerCase().endsWith(e.ext.toLowerCase())));
+    if (valid.length === 0) return;
+    if (valid.length === 1 && !onFiles) {
+      onFile(valid[0]);
+    } else if (valid.length > 1 && onFiles) {
+      onFiles(valid.slice(0, MAX_FILES));
+    } else if (onFiles) {
+      onFiles(valid.slice(0, MAX_FILES));
+    } else {
+      onFile(valid[0]);
+    }
+  }, [onFile, onFiles, isLoading]);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  }, [handleFile]);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) handleFiles(files);
+  }, [handleFiles]);
 
   const onDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -45,8 +58,8 @@ export function UploadZone({ onFile, isLoading, t }: Props) {
   const onDragLeave = () => setDragging(false);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) handleFiles(files);
     e.target.value = '';
   };
 
@@ -68,6 +81,7 @@ export function UploadZone({ onFile, isLoading, t }: Props) {
             ref={inputRef}
             type="file"
             accept={ACCEPT_STRING}
+            multiple
             className="hidden"
             onChange={onChange}
             id="file-input"
@@ -228,7 +242,7 @@ export function UploadZone({ onFile, isLoading, t }: Props) {
                 <AudioWaveform size={13} className="text-cyan-400" />
                 {t.samplingInfo}
               </span>
-              <span className="text-slate-500">{t.fileLimits}</span>
+              <span className="text-slate-500">{t.fileLimits} · Tối đa {MAX_FILES} file</span>
             </div>
           )}
         </div>

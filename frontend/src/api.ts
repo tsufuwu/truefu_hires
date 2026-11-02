@@ -171,3 +171,20 @@ export async function analyzeSample(sampleId: string): Promise<AnalysisResult> {
 
   return response.json();
 }
+
+export async function analyzeFiles(files: File[]): Promise<(AnalysisResult | { filename: string; error: string })[]> {
+  const formData = new FormData();
+  files.forEach(f => formData.append('files', f));
+
+  const response = await fetch(`${API_BASE}/api/analyze-batch`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(err.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}

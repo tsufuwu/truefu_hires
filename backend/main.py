@@ -18,6 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import numpy as np
+from typing import List
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -395,6 +397,66 @@ async def analyze_audio(file: UploadFile = File(...)):
             pass
         import gc
         gc.collect()
+
+
+MAX_BATCH_FILES = 5
+
+@app.post("/api/analyze-batch")
+async def analyze_audio_batch(files: List[UploadFile] = File(...)):
+    """Analyze up to 5 audio files sequentially. Returns list of results or per-file errors."""
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum allowed: {MAX_BATCH_FILES}."
+        )
+
+    results = []
+    for file in files:
+        original_name = file.filename or "unknown"
+        suffix = Path(original_name).suffix.lower()
+
+        if suffix not in SUPPORTED_EXTENSIONS:
+            results.append({
+                "filename": original_name,
+                "error": f"Unsupported file type '{suffix}'. Supported: {sorted(SUPPORTED_EXTENSIONS)}",
+            })
+            continue
+
+        tmp_path = Path(UPLOAD_DIR) / f"{uuid.uuid4().hex}{suffix}"
+        total_bytes = 0
+        max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+        CHUNK_SIZE = 1024 * 1024
+
+        try:
+            with open(tmp_path, "wb") as f_out:
+                while chunk := await file.read(CHUNK_SIZE):
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File '{original_name}' exceeds {MAX_UPLOAD_MB} MB limit.",
+                        )
+                    f_out.write(chunk)
+
+            logger.info("Batch upload saved: %s (%d bytes)", tmp_path, total_bytes)
+            result = _process_audio_file(tmp_path, original_name)
+            results.append(result.model_dump())
+
+        except HTTPException as e:
+            results.append({"filename": original_name, "error": e.detail})
+        except Exception as exc:
+            logger.exception("Batch analysis failed for %s: %s", original_name, exc)
+            results.append({"filename": original_name, "error": str(exc)})
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            import gc
+            gc.collect()
+
+    return results
 
 
 # Mount static frontend if built (dist directory exists)
